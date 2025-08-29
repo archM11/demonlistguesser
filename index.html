@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DemonList Guessr</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Home Screen -->
+        <div id="homeScreen" class="screen active">
+            <div class="container">
+                <h1 class="game-title">DemonList Guessr</h1>
+                <p class="game-subtitle">Guess the demon placement from video alone</p>
+                
+                <div class="menu-grid">
+                    <button class="menu-btn primary" onclick="game.showGameSetup('solo')">
+                        <svg class="menu-icon" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                        Solo Play
+                    </button>
+                    <button class="menu-btn primary" onclick="game.showMultiplayerOptions()">
+                        <svg class="menu-icon" viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+                        Multiplayer
+                    </button>
+                    <button class="menu-btn secondary" onclick="game.showScreen('profileScreen')">
+                        <svg class="menu-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
+                        Profile
+                    </button>
+                    <button class="menu-btn secondary" onclick="game.showScreen('statsScreen')">
+                        <svg class="menu-icon" viewBox="0 0 24 24"><path d="M16,6L18.29,8.29L13.41,13.17L9.41,9.17L2,16.59L3.41,18L9.41,12L13.41,16L19.71,9.71L22,12V6H16Z"/></svg>
+                        Statistics
+                    </button>
+                    <button class="menu-btn secondary" onclick="game.showScreen('leaderboardScreen')">
+                        <svg class="menu-icon" viewBox="0 0 24 24"><path d="M7.5,21H2V9H7.5V21M14.75,3H9.25V21H14.75V3M22,11H16.5V21H22V11Z"/></svg>
+                        Leaderboard
+                    </button>
+                </div>
+                
+                <div id="dailyChallengeBanner" class="daily-challenge-banner">
+                    <span class="daily-icon">📅</span>
+                    <div>
+                        <h3>Daily Challenge</h3>
+                        <p id="dailyStatus">Play today's 5 demons</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Setup Screen -->
+        <div id="gameSetupScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('homeScreen')">← Back</button>
+                <h2>Game Setup</h2>
+                
+                <div class="setup-section">
+                    <h3>Select Lists</h3>
+                    <div class="list-options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="mainList" checked>
+                            <span>Main List (1-75)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="extendedList">
+                            <span>Extended List (76-150)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="legacyList">
+                            <span>Legacy List (151+)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Game Mode</h3>
+                    <select id="gameModeSelect" class="mode-select">
+                        <option value="classic">Classic</option>
+                        <option value="blitz">Blitz (15s Timer)</option>
+                        <option value="timeattack">Time Attack (60s per guess)</option>
+                    </select>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Difficulty</h3>
+                    <div class="difficulty-options">
+                        <label class="radio-label">
+                            <input type="radio" name="difficulty" value="nmpz" checked>
+                            <span>No Info</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="difficulty" value="move">
+                            <span>With Hints</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="difficulty" value="thumbnail">
+                            <span>Thumbnail Only</span>
+                        </label>
+                    </div>
+                    
+                    <div id="moveOptions" class="move-options" style="display:none;">
+                        <h4>Select Hints:</h4>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="showDate">
+                            <span>Date Verified</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="showCreator">
+                            <span>Creator</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="showVerifier">
+                            <span>Verifier</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="showName">
+                            <span>Level Name</span>
+                        </label>
+                    </div>
+                </div>
+
+
+                <button class="start-btn" onclick="game.startGame()">Start Game</button>
+            </div>
+        </div>
+
+        <!-- Multiplayer Options Screen -->
+        <div id="multiplayerOptionsScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('homeScreen')">← Back</button>
+                <h2>Multiplayer</h2>
+                
+                <div class="multiplayer-options">
+                    <div class="option-card">
+                        <div class="option-icon"></div>
+                        <div class="option-info">
+                            <h3>Create Party</h3>
+                            <p>Host a new party and invite friends to play together</p>
+                        </div>
+                        <button class="option-btn" onclick="game.showPartySetup()">Create</button>
+                    </div>
+                    
+                    <div class="option-card">
+                        <div class="option-icon"></div>
+                        <div class="option-info">
+                            <h3>Join Party</h3>
+                            <p>Enter a party code to join an existing party</p>
+                        </div>
+                        <button class="option-btn" onclick="game.showJoinParty()">Join</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Join Party Screen -->
+        <div id="joinPartyScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('multiplayerOptionsScreen')">← Back</button>
+                <h2>Join Party</h2>
+                
+                <div class="join-party-form">
+                    <div class="form-section">
+                        <h3>Enter Party Code</h3>
+                        <div class="code-input-group">
+                            <input type="text" id="joinPartyCode" placeholder="Enter 6-digit code" class="party-code-input" maxlength="6">
+                            <button onclick="game.joinParty()" class="join-btn">Join Party</button>
+                        </div>
+                        <div class="join-help">
+                            <p>Ask your friend for their party code to join their game!</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Party Setup Screen -->
+        <div id="partySetupScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('multiplayerOptionsScreen')">← Back</button>
+                <h2>Create Party</h2>
+                
+                <!-- Visual Team Display -->
+                <div id="partyVisualDisplay" class="party-visual-display">
+                    <!-- FFA Display -->
+                    <div id="ffaVisual" class="ffa-visual">
+                        <h3>Free For All</h3>
+                        <div class="ffa-players">
+                            <div class="player-avatar">
+                                <div class="avatar"><div style="width: 40px; height: 40px; border-radius: 50%; background: #8b5cf6; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">Y</div></div>
+                                <span class="player-name">You</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Teams Display -->
+                    <div id="teamsVisual" class="teams-visual" style="display: none;">
+                        <h3>Teams</h3>
+                        <div class="teams-display">
+                            <div class="team-side" data-team="1">
+                                <h4>Team 1</h4>
+                                <div class="team-avatars">
+                                    <div class="player-avatar">
+                                        <div class="avatar"><div style="width: 40px; height: 40px; border-radius: 50%; background: #8b5cf6; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">Y</div></div>
+                                        <span class="player-name">You</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="vs-divider">VS</div>
+                            <div class="team-side" data-team="2">
+                                <h4>Team 2</h4>
+                                <div class="team-avatars">
+                                    <!-- Empty team -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Duels Display -->
+                    <div id="duelsVisual" class="duels-visual" style="display: none;">
+                        <h3>1v1 Duel</h3>
+                        <div class="duel-display">
+                            <div class="duel-player">
+                                <div class="player-avatar">
+                                    <div class="avatar">👤</div>
+                                    <span class="player-name">You</span>
+                                </div>
+                            </div>
+                            <div class="vs-divider">VS</div>
+                            <div class="duel-player">
+                                <div class="player-avatar waiting">
+                                    <div class="avatar">❓</div>
+                                    <span class="player-name">Waiting...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="setup-section">
+                    <h3>Party Settings</h3>
+                    <div class="party-info">
+                        <input type="text" id="partyName" placeholder="Party Name (optional)" class="party-input">
+                        <div class="party-code-section">
+                            <label>Party Code:</label>
+                            <div class="code-display">
+                                <span id="partyCode">Generating...</span>
+                                <button onclick="game.generatePartyCode()" class="regenerate-btn">🔄</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Game Lists</h3>
+                    <div class="list-options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyMainList" checked>
+                            <span>Main List (1-75)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyExtendedList">
+                            <span>Extended List (76-150)</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyLegacyList">
+                            <span>Legacy List (151+)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Game Type</h3>
+                    <select id="partyGameType" class="mode-select" onchange="game.updatePartyGameType()">
+                        <option value="ffa">Free For All</option>
+                        <option value="teams">Teams</option>
+                        <option value="duels">1v1 Duels</option>
+                    </select>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Game Mode</h3>
+                    <select id="partyGameMode" class="mode-select">
+                        <option value="classic">Classic</option>
+                        <option value="blitz">Blitz (15s Timer)</option>
+                        <option value="timeattack">Time Attack (60s per guess)</option>
+                    </select>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Difficulty</h3>
+                    <div class="difficulty-options">
+                        <label class="radio-label">
+                            <input type="radio" name="partyDifficulty" value="nmpz" checked>
+                            <span>No Info</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="partyDifficulty" value="move">
+                            <span>With Hints</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="partyDifficulty" value="thumbnail">
+                            <span>Thumbnail Only</span>
+                        </label>
+                    </div>
+                    
+                    <div id="partyMoveOptions" class="move-options" style="display:none;">
+                        <h4>Select Hints:</h4>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyShowDate">
+                            <span>Date Verified</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyShowCreator">
+                            <span>Creator</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyShowVerifier">
+                            <span>Verifier</span>
+                        </label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="partyShowName">
+                            <span>Level Name</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setup-section" id="ffaTimerSection" style="display: block;">
+                    <h3>Guess Timer (FFA)</h3>
+                    <div class="timer-options">
+                        <label class="radio-label">
+                            <input type="radio" name="ffaTimer" value="30">
+                            <span>30 seconds</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="ffaTimer" value="60" checked>
+                            <span>60 seconds</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="ffaTimer" value="90">
+                            <span>90 seconds</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="ffaTimer" value="120">
+                            <span>120 seconds</span>
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="ffaTimer" value="0">
+                            <span>No timer</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="setup-section">
+                    <h3>Invite Players</h3>
+                    <div class="invite-section">
+                        <div class="invite-methods">
+                            <button onclick="game.copyPartyLink()" class="invite-btn">📋 Copy Invite Link</button>
+                            <button onclick="game.shareParty()" class="invite-btn">📱 Share Party</button>
+                        </div>
+                        
+                        <!-- FFA Member List -->
+                        <div id="ffaMembersList" class="party-members">
+                            <h4>Party Members (<span id="memberCount">1</span>)</h4>
+                            <div id="membersList" class="members-list">
+                                <div class="member-item" data-member-id="host">
+                                    <span class="member-name">You (Host)</span>
+                                    <span class="member-status">Ready</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Team Management -->
+                        <div id="teamManagement" class="team-management" style="display: none;">
+                            <h4>Team Setup</h4>
+                            <div class="team-controls">
+                                <button onclick="game.addTeam()" class="add-team-btn">+ Add Team</button>
+                                <button onclick="game.autoBalance()" class="balance-btn">Auto Balance</button>
+                            </div>
+                            <div class="teams-container">
+                                <div class="team" data-team-id="1">
+                                    <div class="team-header">
+                                        <h5>Team 1</h5>
+                                        <span class="team-count">(1)</span>
+                                    </div>
+                                    <div class="team-members" ondrop="game.dropMember(event)" ondragover="game.allowDrop(event)">
+                                        <div class="member-item" draggable="true" ondragstart="game.dragStart(event)" data-member-id="host">
+                                            <span class="member-name">You (Host)</span>
+                                            <span class="member-status">Ready</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="team" data-team-id="2">
+                                    <div class="team-header">
+                                        <h5>Team 2</h5>
+                                        <span class="team-count">(0)</span>
+                                    </div>
+                                    <div class="team-members" ondrop="game.dropMember(event)" ondragover="game.allowDrop(event)">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Duels Setup -->
+                        <div id="duelsManagement" class="duels-management" style="display: none;">
+                            <h4>Duels Setup</h4>
+                            <p class="duels-info">Players will be randomly matched for 1v1 duels. Need at least 2 players.</p>
+                            <div id="duelsList" class="duels-list">
+                                <div class="duel-bracket">
+                                    <div class="duel-match">
+                                        <span>Waiting for more players...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="party-buttons">
+                    <button id="startPartyBtn" onclick="game.startParty()" class="start-btn">Start Party Game</button>
+                    <button onclick="game.showScreen('homeScreen')" class="cancel-btn">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Screen -->
+        <div id="gameScreen" class="screen">
+            <div class="game-header">
+                <div class="game-info">
+                    <span class="round-counter">Round <span id="currentRound">1</span></span>
+                    <span class="score">Score: <span id="currentScore">0</span></span>
+                    <span id="timerDisplay" class="timer" style="display:none;">30s</span>
+                </div>
+                
+                <!-- Duel Health Bars -->
+                <div id="duelHealthDisplay" class="duel-health-display" style="display:none;">
+                    <div class="health-bar-container">
+                        <div class="player-health">
+                            <span class="player-label">You</span>
+                            <div class="health-bar">
+                                <div class="health-fill" id="player1Health" style="width: 100%;"></div>
+                            </div>
+                            <span class="health-value" id="player1HealthValue">500/500</span>
+                        </div>
+                        <div class="vs-separator">VS</div>
+                        <div class="player-health">
+                            <span class="player-label">Opponent</span>
+                            <div class="health-bar">
+                                <div class="health-fill" id="player2Health" style="width: 100%;"></div>
+                            </div>
+                            <span class="health-value" id="player2HealthValue">500/500</span>
+                        </div>
+                    </div>
+                </div>
+                
+                
+                <button class="quit-btn" onclick="game.quitGame()">Quit</button>
+            </div>
+
+            <div class="game-content">
+                <div class="video-container">
+                    <div id="youtubePlayer"></div>
+                </div>
+
+                <div id="thumbnailContainer" class="thumbnail-container" style="display:none;">
+                    <img id="thumbnailImage" class="thumbnail-image" alt="Demon thumbnail">
+                    <div class="thumbnail-info">
+                        <p>Guess the demon's placement from this thumbnail!</p>
+                    </div>
+                </div>
+
+                <div id="hintSection" class="hint-section" style="display:none;">
+                    <div id="hintDisplay" class="hints"></div>
+                </div>
+
+                <div id="guessSection" class="guess-section">
+                    <h3>Guess the demon's placement:</h3>
+                    <div class="guess-input-group">
+                        <input type="number" id="guessInput" min="1" placeholder="Enter placement (1-300+)" class="guess-input">
+                        <button onclick="game.submitGuess()" class="submit-btn">Submit Guess</button>
+                    </div>
+                    <div class="list-indicator">
+                    </div>
+                </div>
+
+                <div id="resultSection" class="result-section" style="display:none;">
+                    <div class="result-info">
+                        <h2 id="resultTitle"></h2>
+                        <div class="demon-details">
+                            <div class="detail-row">
+                                <span class="label">Placement:</span>
+                                <span id="actualPlacement" class="value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Your Guess:</span>
+                                <span id="yourGuess" class="value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Points Earned:</span>
+                                <span id="pointsEarned" class="value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Level Name:</span>
+                                <span id="levelName" class="value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Level ID:</span>
+                                <span id="levelId" class="value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Creator:</span>
+                                <span id="creator" class="value"></span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="label">Verifier:</span>
+                                <span id="verifier" class="value"></span>
+                            </div>
+                            
+                            <!-- Duel Combat Result -->
+                            <div id="duelCombatResult" class="duel-combat-result" style="display:none;">
+                                <div class="combat-info">
+                                    <h3>Combat Result</h3>
+                                    <div id="combatDetails" class="combat-details"></div>
+                                    <div class="multiplier-info">
+                                        <span>Current Multiplier: </span>
+                                        <span id="currentMultiplier">1.0x</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="result-buttons">
+                            <button id="nextRoundBtn" onclick="try { console.log('🔴 [BUTTON] Button clicked! Text:', this.textContent); console.log('🔴 [BUTTON] Game object:', typeof game); console.log('🔴 [BUTTON] isHost:', game?.isHost); console.log('🔴 [BUTTON] multiplayerManager:', typeof window.multiplayerManager); game.nextRound(); } catch(e) { console.error('🔴 [BUTTON ERROR]:', e); }" class="next-btn">Next Round</button>
+                            <button onclick="game.viewOnPointercrate()" class="view-btn">View on Pointercrate</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Final Results Screen -->
+        <div id="resultsScreen" class="screen">
+            <div class="container">
+                <h2>Game Results</h2>
+                <div class="final-score">
+                    <h1 id="finalScore">0</h1>
+                    <p>Total Points</p>
+                </div>
+                
+                <div id="roundSummary" class="round-summary"></div>
+                
+                <div class="results-buttons">
+                    <button onclick="game.backToLobby()" class="play-again-btn">Back to Lobby</button>
+                    <button onclick="game.showScreen('homeScreen')" class="home-btn">Home</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Other Screens (Profile, Stats, Leaderboard, Achievements) -->
+        <div id="profileScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('homeScreen')">← Back</button>
+                <h2>Profile</h2>
+                <div class="profile-content">
+                    <div class="profile-header">
+                        <div class="avatar-section">
+                            <div class="avatar" id="currentAvatar">A</div>
+                            <button onclick="game.showAvatarSelector()" class="change-avatar-btn">Change Avatar</button>
+                        </div>
+                        <input type="text" id="username" placeholder="Enter username" class="username-input" onchange="localStorage.setItem('username', this.value); game.updateAvatarDisplay();">
+                    </div>
+                    
+                    <div id="avatarSelector" class="avatar-selector" style="display: none;">
+                        <h4>Upload Profile Picture</h4>
+                        <div class="custom-avatar-section">
+                            <input type="file" id="avatarFileInput" accept="image/*" onchange="game.handleAvatarUpload(event)" style="display: none;">
+                            <button onclick="document.getElementById('avatarFileInput').click()" class="upload-btn">Choose Image</button>
+                            <div id="avatarPreview" class="avatar-preview" style="display: none;">
+                                <img id="previewImage" class="preview-image" alt="Avatar preview">
+                                <button onclick="game.useUploadedAvatar()" class="use-avatar-btn">Use This Image</button>
+                            </div>
+                            <button onclick="game.resetToDefaultAvatar()" class="reset-avatar-btn">Reset to Default</button>
+                        </div>
+                        
+                        <button onclick="game.hideAvatarSelector()" class="close-selector-btn">Close</button>
+                    </div>
+                    <div class="profile-stats">
+                        <div class="stat-card">
+                            <h3>Games Played</h3>
+                            <p id="gamesPlayed">0</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Average Score</h3>
+                            <p id="avgScore">0</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Best Score</h3>
+                            <p id="bestScore">0</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="statsScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('homeScreen')">← Back</button>
+                <h2>Statistics</h2>
+                <div class="stats-content">
+                    <div class="accuracy-chart">
+                        <h3>Accuracy by List Range</h3>
+                        <canvas id="accuracyChart"></canvas>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Perfect Guesses</span>
+                            <span class="stat-value" id="perfectGuesses">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Average Distance</span>
+                            <span class="stat-value" id="avgDistance">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Main List Accuracy</span>
+                            <span class="stat-value" id="mainAccuracy">0%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Extended List Accuracy</span>
+                            <span class="stat-value" id="extendedAccuracy">0%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="leaderboardScreen" class="screen">
+            <div class="container">
+                <button class="back-btn" onclick="game.showScreen('homeScreen')">← Back</button>
+                <h2>Leaderboard</h2>
+                <div class="leaderboard-tabs">
+                    <button class="tab-btn active" onclick="game.showLeaderboard('daily')">Daily</button>
+                    <button class="tab-btn" onclick="game.showLeaderboard('weekly')">Weekly</button>
+                    <button class="tab-btn" onclick="game.showLeaderboard('alltime')">All Time</button>
+                </div>
+                <div id="leaderboardList" class="leaderboard-list"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <script src="multiplayer.js"></script>
+    <script src="game.js?v=1756356600000"></script>
+</body>
+</html>
