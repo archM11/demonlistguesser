@@ -1,9 +1,45 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
+
+// Serve static files with no-cache headers
+app.use(express.static('.', {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js') || filePath.endsWith('.html') || filePath.endsWith('.css')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }
+}));
+
+// Serve index.html with cache-busting
+app.get('/', (req, res) => {
+    const filePath = path.join(__dirname, 'index.html');
+    const timestamp = Date.now();
+    
+    fs.readFile(filePath, 'utf8', (err, data) => {
+        if (err) {
+            res.status(404).send('File not found');
+            return;
+        }
+        
+        // Inject cache-busting timestamp
+        const modifiedHtml = data.replace(
+            '<script src="game.js"></script>',
+            `<script src="game.js?v=${timestamp}"></script>`
+        );
+        
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.send(modifiedHtml);
+    });
+});
 const io = socketIo(server, {
     cors: {
         origin: "*",
@@ -750,6 +786,7 @@ function handlePlayerLeave(socketId) {
 }
 
 const PORT = process.env.PORT || 3002;
+const HTTP_PORT = PORT;
 server.listen(PORT, () => {
     console.log(`🚀 Multiplayer server running on port ${PORT}`);
     console.log(`🎮 Features: FFA, Teams, Duels with health system`);

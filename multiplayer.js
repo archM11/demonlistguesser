@@ -36,6 +36,9 @@ class MultiplayerManager {
         } else if (hostname.includes('ngrok')) {
             // For ngrok, use the multiplayer tunnel URL
             serverUrl = 'https://41f5d762fb46.ngrok-free.app';
+        } else if (hostname.includes('railway.app')) {
+            // For Railway deployment, use same domain
+            serverUrl = window.location.origin;
         } else {
             // Update this with your deployed server URL
             serverUrl = 'https://your-deployed-server.herokuapp.com';
