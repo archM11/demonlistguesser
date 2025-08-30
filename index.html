@@ -184,10 +184,7 @@
                     <div id="ffaVisual" class="ffa-visual">
                         <h3>Free For All</h3>
                         <div class="ffa-players">
-                            <div class="player-avatar">
-                                <div class="avatar"><div style="width: 40px; height: 40px; border-radius: 50%; background: #8b5cf6; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">Y</div></div>
-                                <span class="player-name">You</span>
-                            </div>
+                            <!-- Players will be dynamically populated by JavaScript -->
                         </div>
                     </div>
                     
@@ -276,7 +273,7 @@
                     </select>
                 </div>
 
-                <div class="setup-section">
+                <div class="setup-section" id="partyGameModeSection">
                     <h3>Game Mode</h3>
                     <select id="partyGameMode" class="mode-select">
                         <option value="classic">Classic</option>
@@ -416,7 +413,7 @@
 
                 <div class="party-buttons">
                     <button id="startPartyBtn" onclick="game.startParty()" class="start-btn">Start Party Game</button>
-                    <button onclick="game.showScreen('homeScreen')" class="cancel-btn">Cancel</button>
+                    <button onclick="game.goHome()" class="cancel-btn">Cancel</button>
                 </div>
             </div>
         </div>
@@ -548,7 +545,7 @@
                 
                 <div class="results-buttons">
                     <button onclick="game.backToLobby()" class="play-again-btn">Back to Lobby</button>
-                    <button onclick="game.showScreen('homeScreen')" class="home-btn">Home</button>
+                    <button onclick="game.goHome()" class="home-btn">Home</button>
                 </div>
             </div>
         </div>

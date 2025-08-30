@@ -1,0 +1,11 @@
+GitHub Repository Information
+============================
+
+Repository URL: https://github.com/archM11/demonlistguesser
+Owner: archM11
+Repository Name: demonlistguesser
+Initial Commit: 3ee6525
+Created: 2025-08-29
+
+This repository contains the complete Geometry Dash Demon List Guesser
+multiplayer web application with all current features and fixes.

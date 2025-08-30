@@ -349,8 +349,15 @@ body {
 
 .leaderboard-item.winner {
     background: #FFD700;
-    color: #1a1a2e;
+    color: #1a1a2e !important;
     font-weight: bold;
+}
+
+.leaderboard-item.winner .rank,
+.leaderboard-item.winner .player-name,
+.leaderboard-item.winner .player-score,
+.leaderboard-item.winner span {
+    color: #1a1a2e !important;
 }
 
 .rank {
@@ -568,11 +575,12 @@ body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem;
-    background: var(--surface-light);
-    border-radius: 0.5rem;
-    min-width: 80px;
+    gap: 0.75rem;
+    padding: 20px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 12px;
+    min-width: 140px;
+    margin: 10px;
 }
 
 .player-avatar.waiting {
@@ -580,15 +588,16 @@ body {
 }
 
 .player-avatar .avatar {
-    width: 50px;
-    height: 50px;
-    background: var(--primary);
+    width: 60px;
+    height: 60px;
+    background: #8b5cf6;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 1.5rem;
+    font-size: 24px;
     color: white;
+    font-weight: bold;
 }
 
 .player-avatar .player-name {

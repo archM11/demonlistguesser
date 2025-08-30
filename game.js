@@ -467,8 +467,9 @@ class DemonListGuessr {
                 });
             });
 
-            // Add Enter key support for guess input
+            // Add Enter key support for guess input and Tab key prevention
             document.addEventListener('keydown', (e) => {
+                // Handle Enter key for guess submission
                 if (e.key === 'Enter' || e.key === 'Return') {
                     const guessInput = document.getElementById('guessInput');
                     const gameScreen = document.getElementById('gameScreen');
@@ -480,6 +481,25 @@ class DemonListGuessr {
                         (document.activeElement === guessInput || guessInput.value)) {
                         e.preventDefault();
                         this.submitGuess();
+                    }
+                }
+                
+                // Block Tab key unless round is actively in progress
+                if (e.key === 'Tab') {
+                    const gameScreen = document.getElementById('gameScreen');
+                    const guessSection = document.getElementById('guessSection');
+                    const guessInput = document.getElementById('guessInput');
+                    
+                    // Only allow Tab if we're in active gameplay (game screen active, guess section visible, and input exists)
+                    const isRoundInProgress = gameScreen && gameScreen.classList.contains('active') && 
+                                            guessSection && guessSection.style.display !== 'none' &&
+                                            guessInput;
+                    
+                    if (!isRoundInProgress) {
+                        console.log('🚫 [TAB BLOCK] Tab key blocked - round not in progress');
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return false;
                     }
                 }
             });
@@ -503,6 +523,12 @@ class DemonListGuessr {
     }
 
     handlePlayerScoreSubmitted(data) {
+        // Prevent handling player score if user has quit
+        if (this.userHasQuit) {
+            console.log('🚪 [QUIT] Ignoring handlePlayerScoreSubmitted because user has quit');
+            return;
+        }
+        
         // Handle when any player submits their score 
         const currentUserId = this.getCurrentUserId();
         
@@ -611,6 +637,12 @@ class DemonListGuessr {
             isHost: this.isHost
         });
         
+        // Prevent handling next round if user has quit
+        if (this.userHasQuit) {
+            console.log('🚪 [QUIT] Ignoring handleNextRoundStarted because user has quit');
+            return;
+        }
+        
         // Close any duel results overlay for non-hosts
         const duelResultsOverlay = document.getElementById('detailedDuelResults');
         if (duelResultsOverlay) {
@@ -651,6 +683,50 @@ class DemonListGuessr {
             // Set to server round directly - startNewRound will NOT increment because we're in multiplayer
             this.currentGame.currentRound = data.round;
             console.log('🔄 [CLIENT] After sync - currentRound:', this.currentGame.currentRound);
+        }
+        
+        // CRITICAL: Sync health data from party to game to prevent HP bar movement
+        if (data.party && data.party.duelHealth && this.currentGame && this.currentGame.gameType === 'duels') {
+            console.log('🔄 [HEALTH SYNC] Synchronizing duel health from party:', data.party.duelHealth);
+            console.log('🔄 [HEALTH SYNC] Previous game health:', this.currentGame.duelHealth);
+            console.log('🔄 [HEALTH SYNC] Socket ID:', window.multiplayerManager?.socket?.id);
+            console.log('🔄 [HEALTH SYNC] My health before sync:', this.currentGame.duelHealth?.[window.multiplayerManager?.socket?.id]);
+            console.log('🔄 [HEALTH SYNC] My health from server:', data.party.duelHealth?.[window.multiplayerManager?.socket?.id]);
+            this.currentGame.duelHealth = { ...data.party.duelHealth };
+            console.log('🔄 [HEALTH SYNC] Updated game health:', this.currentGame.duelHealth);
+            console.log('🔄 [HEALTH SYNC] My health after sync:', this.currentGame.duelHealth?.[window.multiplayerManager?.socket?.id]);
+            
+            // CRITICAL: Check for victory condition IMMEDIATELY after health sync and BEFORE display update
+            const memberIds = this.currentParty.members.map(m => m.id);
+            const player1Id = memberIds[0];
+            const player2Id = memberIds[1];
+            
+            if (this.currentGame.duelHealth[player1Id] <= 0 || this.currentGame.duelHealth[player2Id] <= 0) {
+                console.log('🏆 [HEALTH SYNC] IMMEDIATE victory condition detected - someone at 0 HP');
+                
+                // Determine winner immediately
+                const currentUserId = window.multiplayerManager?.socket?.id;
+                if (this.currentGame.duelHealth[currentUserId] > 0) {
+                    this.currentGame.duelWinner = currentUserId;
+                    console.log('🏆 [HEALTH SYNC] I won! Setting duelWinner to:', currentUserId);
+                } else {
+                    const opponentId = memberIds.find(id => id !== currentUserId);
+                    this.currentGame.duelWinner = opponentId;
+                    console.log('🏆 [HEALTH SYNC] Opponent won! Setting duelWinner to:', opponentId);
+                }
+            }
+            
+            // CRITICAL FIX: Force update display with correct health values immediately after sync
+            console.log('🔄 [HEALTH SYNC] Force updating display with correct server health values');
+            this.updateDuelDisplay();
+        }
+        
+        // CRITICAL: Sync multiplier from server to ensure UI displays correct value
+        if (data.multiplier !== undefined && this.currentGame && this.currentGame.duelState) {
+            console.log('🔄 [MULTIPLIER SYNC] Synchronizing multiplier from server:', data.multiplier);
+            console.log('🔄 [MULTIPLIER SYNC] Previous multiplier:', this.currentGame.duelState.roundMultiplier);
+            this.currentGame.duelState.roundMultiplier = data.multiplier;
+            console.log('🔄 [MULTIPLIER SYNC] Updated multiplier:', this.currentGame.duelState.roundMultiplier);
         }
         
         // Check for duel winner first - show final results instead of generic end game
@@ -699,6 +775,12 @@ class DemonListGuessr {
     }
     
     setupMultiplayerCallbacks() {
+        console.log('🔧 [SETUP-1] setupMultiplayerCallbacks() called at:', new Date().toISOString());
+        console.log('🔧 [SETUP-1] Context:', {
+            isHost: this.isHost,
+            socketId: window.multiplayerManager?.socket?.id,
+            connected: window.multiplayerManager?.connected
+        });
         
         window.multiplayerManager.onPlayerScoreSubmitted = (data) => {
             this.handlePlayerScoreSubmitted(data);
@@ -716,7 +798,16 @@ class DemonListGuessr {
         };
         
         window.multiplayerManager.onPartyUpdated = (party) => {
+            console.log('🔥 [NUCLEAR] onPartyUpdated callback triggered');
             this.handlePartyUpdate(party);
+            
+            // Immediate nuclear FFA update if needed
+            if (party.gameType === 'ffa' && 
+                document.getElementById('partySetupScreen')?.classList.contains('active')) {
+                console.log('🔥 [NUCLEAR] Direct FFA update from onPartyUpdated');
+                setTimeout(() => this.rebuildFFADisplay(), 0);
+                setTimeout(() => this.rebuildFFADisplay(), 100);
+            }
         };
         
         window.multiplayerManager.onPartyCreated = (data) => {
@@ -750,6 +841,57 @@ class DemonListGuessr {
             console.log('🎉 [CLIENT] Member joined party:', data);
             this.handleMemberJoined(data);
         };
+        
+        // CRITICAL FIX: Add gameFinished callback to bring all players to results screen
+        console.log('🔧 [CALLBACK-1] ========== SETTING CALLBACK ==========');
+        console.log('🔧 [CALLBACK-1] Setting onGameFinished callback for:', {
+            isHost: this.isHost,
+            socketId: window.multiplayerManager?.socket?.id,
+            timestamp: new Date().toISOString(),
+            existingCallback: typeof window.multiplayerManager?.onGameFinished,
+            multiplayerExists: !!window.multiplayerManager
+        });
+        
+        // Store callback with debugging wrapper
+        const gameFinishedCallback = (data) => {
+            console.log('🏁 [CLIENT-1] ========== CALLBACK-1 FIRED ==========');
+            console.log('🏁 [CLIENT-1] Game finished - bringing player to results screen:', data);
+            console.log('🏁 [CLIENT-1] This is host?', this.isHost);
+            console.log('🏁 [CLIENT-1] Socket ID:', window.multiplayerManager?.socket?.id);
+            console.log('🏁 [CLIENT-1] About to call handleGameFinished');
+            
+            try {
+                this.handleGameFinished(data);
+                console.log('🏁 [CLIENT-1] ✅ handleGameFinished completed');
+            } catch (error) {
+                console.error('🏁 [CLIENT-1] ❌ handleGameFinished failed:', error);
+            }
+            
+            console.log('🏁 [CLIENT-1] ========== CALLBACK-1 COMPLETED ==========');
+        };
+        
+        window.multiplayerManager.onGameFinished = gameFinishedCallback;
+        
+        // Verify callback was set
+        console.log('✅ [CALLBACK-1] Callback set. Verification:', {
+            callbackExists: typeof window.multiplayerManager.onGameFinished === 'function',
+            callbackMatches: window.multiplayerManager.onGameFinished === gameFinishedCallback
+        });
+        
+        // Set up monitoring to detect if callback gets overridden
+        setTimeout(() => {
+            console.log('🔍 [CALLBACK-1] 1-second check - callback still exists:', 
+                typeof window.multiplayerManager?.onGameFinished === 'function',
+                'matches original:', window.multiplayerManager?.onGameFinished === gameFinishedCallback
+            );
+        }, 1000);
+        
+        setTimeout(() => {
+            console.log('🔍 [CALLBACK-1] 5-second check - callback still exists:', 
+                typeof window.multiplayerManager?.onGameFinished === 'function',
+                'matches original:', window.multiplayerManager?.onGameFinished === gameFinishedCallback
+            );
+        }, 5000);
     }
 
     handlePartyCreated(data) {
@@ -772,17 +914,12 @@ class DemonListGuessr {
         this.updatePartyGameTypeVisuals();
         this.updatePartyVisual();
         
-        // Force initial visual update based on game type with delay to ensure DOM is ready
-        console.log('🎨 [CLIENT] Force updating visual for initial party creation, gameType:', this.currentParty.gameType);
-        setTimeout(() => {
-            if (this.currentParty.gameType === 'ffa') {
-                console.log('🎨 [CLIENT] Delayed FFA visual update for party creation');
-                this.updateFFAVisual();
-                // Additional updates for party creation
-                setTimeout(() => this.updateFFAVisual(), 100);
-                setTimeout(() => this.updateFFAVisual(), 300);
-            }
-        }, 100);
+        // 🔥 NUCLEAR: Simple immediate update
+        console.log('🔥 NUCLEAR: Party created, updating visuals');
+        if (this.currentParty.gameType === 'ffa') {
+            this.rebuildFFADisplay();
+            this.startFFAAutoFix(); // Start auto-fix monitoring
+        }
         
         // Initialize teams if not present
         if (!this.currentParty.teams) {
@@ -975,19 +1112,69 @@ class DemonListGuessr {
         // The button will show "View Results" instead of "Next Round" now
         console.log('🏆 [CLIENT] Duel victory set - waiting for user to click "View Results"');
         
-        // Update the button text if it exists
+        // Update the button text if it exists - check both possible button IDs
         const nextBtn = document.getElementById('nextRoundBtn');
+        const duelNextBtn = document.getElementById('duelNextRoundBtn');
+        
         if (nextBtn) {
-            nextBtn.textContent = 'View Results';
-            console.log('🏆 [CLIENT] Updated button text to "View Results"');
+            nextBtn.textContent = 'View Summary';
+            console.log('🏆 [CLIENT] Updated nextRoundBtn text to "View Summary"');
         }
+        
+        if (duelNextBtn) {
+            duelNextBtn.textContent = 'View Summary';
+            console.log('🏆 [CLIENT] Updated duelNextRoundBtn text to "View Summary"');
+        }
+    }
+
+    handleGameFinished(data) {
+        console.log('🔴 [DEBUG] ========== handleGameFinished() CALLED ==========');
+        console.log('🔴 [DEBUG] Called with data:', data);
+        console.log('🔴 [DEBUG] Final scores:', data.finalScores);
+        console.log('🔴 [DEBUG] Game type:', data.gameType);
+        console.log('🔴 [DEBUG] Current game state:', {
+            gameType: this.currentGame?.gameType,
+            currentRound: this.currentGame?.currentRound,
+            isHost: this.isHost,
+            currentScreen: document.querySelector('.screen.active')?.id
+        });
+        console.log('🔴 [DEBUG] Stack trace:', new Error().stack);
+        
+        // Update game state with final results
+        if (data.finalScores) {
+            console.log('🔴 [DEBUG] Updating totalScores from:', this.currentGame?.totalScores, 'to:', data.finalScores);
+            this.currentGame.totalScores = data.finalScores;
+        } else {
+            console.log('🔴 [DEBUG] No finalScores in data to update');
+        }
+        
+        // Bring player to results screen - this calls endGame() which shows the results
+        console.log('🔴 [DEBUG] About to call this.endGame()');
+        console.log('🔴 [DEBUG] endGame function exists:', typeof this.endGame);
+        
+        try {
+            this.endGame();
+            console.log('🔴 [DEBUG] ✅ this.endGame() completed successfully');
+        } catch (error) {
+            console.error('🔴 [DEBUG] ❌ this.endGame() failed:', error);
+            console.error('🔴 [DEBUG] Error stack:', error.stack);
+        }
+        
+        console.log('🔴 [DEBUG] ========== handleGameFinished() COMPLETED ==========');
     }
 
     handleMemberLeft(data) {
         console.log('🚪 [CLIENT] handleMemberLeft called with data:', data);
         
-        // Show notification to remaining players
-        this.showNotification(`${data.playerName} left the party`, 'info');
+        // Show different notifications based on game state
+        if (this.currentScreen === 'gameScreen' || this.currentScreen === 'ffaRevealScreen') {
+            // During active game
+            this.showNotification(`${data.playerName} left the game. Adjusting player count...`, 'warning');
+            console.log(`🎮 [GAME] Player left during active game. Remaining players: ${data.remainingMembers}`);
+        } else {
+            // In lobby/setup
+            this.showNotification(`${data.playerName} left the party`, 'info');
+        }
         
         // Update party visual if we're on the party setup screen
         if (document.getElementById('partySetupScreen').classList.contains('active')) {
@@ -1446,80 +1633,153 @@ class DemonListGuessr {
         }
     }
 
-    updateFFAVisual() {
-        try {
-            console.log('🎯 [CLIENT] updateFFAVisual called');
-            console.log('🎯 [CLIENT] Current game type:', this.currentParty?.gameType);
-            console.log('🎯 [CLIENT] isHost:', this.isHost);
-            console.log('🎯 [CLIENT] Party members:', this.currentParty?.members);
-            console.log('🎯 [CLIENT] Looking for .ffa-players container...');
-            
-            const ffaPlayersContainer = document.querySelector('.ffa-players');
-            if (!ffaPlayersContainer) {
-                console.error('❌ [CLIENT] .ffa-players container not found!');
-                console.log('🎯 [CLIENT] Available containers:', Array.from(document.querySelectorAll('.ffa-players, .ffa-visual, #ffaVisual')).map(el => el.className || el.id));
-                return;
-            }
-            
-            console.log('✅ [CLIENT] Found .ffa-players container:', ffaPlayersContainer);
+    // 🔥 NUCLEAR OPTION: Completely rebuilt FFA display system
+    rebuildFFADisplay() {
+        console.log('🔥 NUCLEAR v2.1: Starting complete FFA display rebuild with !important styling');
         
-        if (!this.currentParty || !this.currentParty.members) {
-            console.error('❌ [CLIENT] No party or members data available');
+        // Enhanced debugging
+        console.log('🔥 NUCLEAR DEBUG:', {
+            currentParty: !!this.currentParty,
+            gameType: this.currentParty?.gameType,
+            membersCount: this.currentParty?.members?.length || 0,
+            members: this.currentParty?.members?.map(m => ({ id: m.id, name: m.name })) || [],
+            isHost: this.isHost,
+            socketId: window.multiplayerManager?.getSocketId()
+        });
+        
+        // Get the container with multiple fallbacks
+        let container = document.querySelector('.ffa-players');
+        if (!container) {
+            container = document.querySelector('#ffaMembersList .ffa-players');
+        }
+        if (!container) {
+            console.error('🔥 NUCLEAR: Critical - no FFA container found anywhere');
             return;
         }
         
-        const customAvatar = localStorage.getItem('customAvatar');
-        const currentUsername = localStorage.getItem('username') || 'You';
+        console.log('🔥 NUCLEAR: Found container:', container.className);
+        
+        // Get party members with validation
+        const members = this.currentParty?.members || [];
+        if (members.length === 0) {
+            console.log('🔥 NUCLEAR: No members to display');
+            container.innerHTML = '<div class="no-players">No players in party</div>';
+            return;
+        }
+        
+        console.log('🔥 NUCLEAR: Rebuilding with members:', members.map(m => `${m.name} (${m.id})`));
+        
+        // Force clear everything with DOM manipulation
+        while (container.firstChild) {
+            container.removeChild(container.firstChild);
+        }
+        
+        // Get current user info
         const currentSocketId = window.multiplayerManager?.getSocketId();
+        const customAvatar = localStorage.getItem('customAvatar');
         
-        console.log('🎯 [CLIENT] Updating FFA visual with:', {
-            memberCount: this.currentParty.members.length,
-            currentSocketId: currentSocketId,
-            members: this.currentParty.members.map(m => ({ id: m.id, name: m.name }))
-        });
+        // Fragment for better performance
+        const fragment = document.createDocumentFragment();
         
-        // Clear and rebuild
-        ffaPlayersContainer.innerHTML = '';
-        
-        // Add all players
-        this.currentParty.members.forEach((member, index) => {
-            const playerDiv = document.createElement('div');
-            playerDiv.className = 'player-avatar';
+        // Rebuild each player from scratch with correct classes to match HTML template
+        members.forEach((member, index) => {
+            const div = document.createElement('div');
+            div.className = 'player-avatar'; // FIXED: Use player-avatar to match HTML template
+            div.dataset.memberId = member.id; // Add data attribute for debugging
             
-            let avatarContent;
             const isCurrentUser = member.id === currentSocketId;
+            const isHost = member.id === this.currentParty.host;
+            const displayName = isCurrentUser ? 'You' : (member.name || 'Player');
+            const letter = (member.name || 'Player').charAt(0).toUpperCase() || 'P';
             
-            // Use member.name for display name (server sends the actual username)
-            const displayName = member.name || (isCurrentUser ? currentUsername : 'Player');
+            console.log(`🔥 NUCLEAR: Processing member ${index + 1}:`, {
+                name: displayName,
+                isCurrentUser,
+                isHost,
+                id: member.id,
+                socketId: currentSocketId
+            });
             
-            // Check for custom avatar
-            if (isCurrentUser && customAvatar) {
-                avatarContent = `<img src="${customAvatar}" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover;">`;
+            // Create avatar content for CSS styling (no inline styles)
+            let avatarContent;
+            if (isCurrentUser) {
+                const userAvatar = localStorage.getItem('userAvatar');
+                if (customAvatar) {
+                    avatarContent = `<img src="${customAvatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">`;
+                } else if (userAvatar) {
+                    avatarContent = userAvatar;
+                } else {
+                    // Just the letter - let CSS handle styling
+                    avatarContent = letter;
+                }
+            } else if (member.avatar) {
+                avatarContent = member.avatar;
             } else {
-                // Use the first letter of the actual name
-                const letter = displayName.charAt(0).toUpperCase() || 'P';
-                avatarContent = `<div style="width: 40px; height: 40px; border-radius: 50%; background: #8b5cf6; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">${letter}</div>`;
+                // Just the letter - let CSS handle styling
+                avatarContent = letter;
             }
             
-            const isHost = member.id === this.currentParty.host;
-            
-            playerDiv.innerHTML = `
+            // Build HTML structure using CSS classes (no inline styles)
+            div.innerHTML = `
                 <div class="avatar">${avatarContent}</div>
                 <span class="player-name">${displayName}${isHost ? ' 👑' : ''}</span>
             `;
-            ffaPlayersContainer.appendChild(playerDiv);
             
-            console.log('🎯 [CLIENT] Added player to FFA:', { 
-                name: displayName, 
-                isHost: isHost, 
-                isCurrentUser: isCurrentUser 
-            });
+            // Let CSS handle all the styling - remove inline style overrides
+            
+            fragment.appendChild(div);
+            console.log(`🔥 NUCLEAR: Created element for ${displayName}`);
         });
         
-        console.log('🎯 [CLIENT] FFA visual update complete. Players shown:', this.currentParty.members.length);
-        } catch (error) {
-            console.error('❌ [CLIENT] Error in updateFFAVisual:', error);
-            console.error('❌ [CLIENT] Stack trace:', error.stack);
+        // Append all at once
+        container.appendChild(fragment);
+        
+        // Verify the result
+        const finalCount = container.querySelectorAll('.player-avatar').length;
+        console.log(`🔥 NUCLEAR: Rebuild complete - ${finalCount}/${members.length} players displayed`);
+        
+        // Force style refresh and layout update
+        container.style.display = 'none';
+        container.offsetHeight; // Force reflow
+        container.style.display = 'flex'; // Use flex for proper card layout
+        container.style.flexWrap = 'wrap';
+        container.style.justifyContent = 'center';
+        container.style.gap = '10px';
+        
+        console.log('🔥 NUCLEAR: Display refresh complete with flex layout');
+    }
+    
+    // Redirect old function to nuclear option
+    updateFFAVisual() {
+        console.log('🎯 [CLIENT] updateFFAVisual redirecting to nuclear option');
+        this.rebuildFFADisplay();
+    }
+    
+    // 🔥 NUCLEAR: Auto-fix safety net - runs every 2 seconds
+    startFFAAutoFix() {
+        if (this.ffaAutoFixInterval) {
+            clearInterval(this.ffaAutoFixInterval);
+        }
+        
+        this.ffaAutoFixInterval = setInterval(() => {
+            const screen = document.getElementById('partySetupScreen');
+            if (screen && screen.classList.contains('active') && this.currentParty?.gameType === 'ffa') {
+                const expectedMembers = this.currentParty?.members?.length || 0;
+                const displayedMembers = document.querySelectorAll('.ffa-players .player-avatar').length;
+                
+                if (expectedMembers !== displayedMembers && expectedMembers > 0) {
+                    console.log('🔥 NUCLEAR: Auto-fix detected member count mismatch');
+                    console.log(`🔥 NUCLEAR: Expected ${expectedMembers}, displayed ${displayedMembers}`);
+                    this.rebuildFFADisplay();
+                }
+            }
+        }, 2000);
+    }
+    
+    stopFFAAutoFix() {
+        if (this.ffaAutoFixInterval) {
+            clearInterval(this.ffaAutoFixInterval);
+            this.ffaAutoFixInterval = null;
         }
     }
 
@@ -1699,7 +1959,8 @@ class DemonListGuessr {
             return;
         }
         
-        const gameMode = document.getElementById('partyGameMode').value;
+        // For FFA games, use 'classic' mode since FFA only needs timer setting
+        const gameMode = this.currentParty.gameType === 'ffa' ? 'classic' : document.getElementById('partyGameMode').value;
         const difficulty = document.querySelector('input[name="partyDifficulty"]:checked').value;
         
         const hints = {
@@ -1714,6 +1975,11 @@ class DemonListGuessr {
         if (this.currentParty.gameType === 'ffa') {
             const timerRadio = document.querySelector('input[name="ffaTimer"]:checked');
             ffaTimer = timerRadio ? parseInt(timerRadio.value) : 60;
+            console.log('🕐 [FFA] Timer setting:', { 
+                radioElement: !!timerRadio, 
+                radioValue: timerRadio?.value, 
+                finalTimer: ffaTimer 
+            });
         }
 
         // Update party settings
@@ -1767,6 +2033,9 @@ class DemonListGuessr {
         console.log('🚀 [CLIENT] handleMultiplayerGameStart called with data:', data);
         console.log('🚀 [CLIENT] Current screen:', document.querySelector('.screen.active')?.id);
         
+        // Reset quit flag when starting multiplayer game
+        this.userHasQuit = false;
+        
         // Ensure demons are loaded before starting
         if (this.finalList.length === 0 && this.consolidatedList.length === 0) {
             console.log('⏳ [CLIENT] Demons not loaded yet, waiting...');
@@ -1814,7 +2083,7 @@ class DemonListGuessr {
                 console.log('🏆 [FFA] Initializing FFA scores:', scores);
                 return scores;
             })() : null,
-            ffaTimer: gameData.ffaTimer || 60, // Store FFA timer setting
+            ffaTimer: gameData.ffaTimer ?? 60, // Store FFA timer setting (use ?? to allow 0)
             // Enhanced duel system with countdown
             duelHealth: gameData.gameType === 'duels' ? (() => {
                 const health = {
@@ -1890,18 +2159,47 @@ class DemonListGuessr {
         if (document.getElementById('partySetupScreen').classList.contains('active')) {
             console.log('🔄 [CLIENT] Updating party setup screen UI');
             
-            // Update game type selector to match server state
+            // Update game type selector to match server state  
             const gameTypeSelect = document.getElementById('partyGameType');
+            console.log('🎮 [GAMEMODE DEBUG] Current selector value:', gameTypeSelect?.value);
+            console.log('🎮 [GAMEMODE DEBUG] Server party gameType:', party.gameType);
+            console.log('🎮 [GAMEMODE DEBUG] Is host?', this.isHost);
+            
             if (gameTypeSelect && gameTypeSelect.value !== party.gameType) {
                 gameTypeSelect.value = party.gameType;
                 console.log('🔄 [CLIENT] Updated game type selector to:', party.gameType);
+                
+                // Force trigger change event for non-host UI updates
+                if (!this.isHost) {
+                    console.log('🎮 [NON-HOST] Forcing complete visual gameType update');
+                    
+                    // Force update the title display
+                    const gameTypeTitle = document.querySelector('#partySetupScreen h2');
+                    console.log('🎮 [NON-HOST] Updating title for gameType:', party.gameType);
+                    console.log('🎮 [NON-HOST] Found title element:', !!gameTypeTitle);
+                    if (gameTypeTitle && party.gameType === 'duels') {
+                        gameTypeTitle.textContent = '1v1 Duels';
+                        console.log('🎮 [NON-HOST] Title set to: 1v1 Duels');
+                    } else if (gameTypeTitle && party.gameType === 'ffa') {
+                        gameTypeTitle.textContent = 'Free For All';
+                        console.log('🎮 [NON-HOST] Title set to: Free For All');
+                    } else if (gameTypeTitle && party.gameType === 'teams') {
+                        gameTypeTitle.textContent = 'Teams';
+                        console.log('🎮 [NON-HOST] Title set to: Teams');
+                    }
+                    
+                    const changeEvent = new Event('change', { bubbles: true });
+                    gameTypeSelect.dispatchEvent(changeEvent);
+                }
             }
             
             // Apply host/non-host restrictions
             this.applyHostRestrictions();
             
             // Manually trigger the visual update without server sync
+            console.log('🎨 [VISUAL UPDATE] Calling updatePartyGameTypeVisuals for gameType:', party.gameType);
             this.updatePartyGameTypeVisuals();
+            console.log('🎨 [VISUAL UPDATE] Calling updatePartyVisual');
             this.updatePartyVisual();
             
             // Force update the specific game type visual
@@ -1935,6 +2233,8 @@ class DemonListGuessr {
         const gameType = this.currentParty?.gameType || 'ffa';
         
         console.log('🎨 [CLIENT] updatePartyGameTypeVisuals called for game type:', gameType);
+        console.log('🎨 [DEBUG] Is host?', this.isHost);
+        console.log('🎨 [DEBUG] Current party:', this.currentParty);
         
         // Show/hide appropriate management sections
         const ffaMembersList = document.getElementById('ffaMembersList');
@@ -1950,9 +2250,19 @@ class DemonListGuessr {
         const teamsVisual = document.getElementById('teamsVisual');
         const duelsVisual = document.getElementById('duelsVisual');
         
-        if (ffaVisual) ffaVisual.style.display = gameType === 'ffa' ? 'block' : 'none';
-        if (teamsVisual) teamsVisual.style.display = gameType === 'teams' ? 'block' : 'none';
-        if (duelsVisual) duelsVisual.style.display = gameType === 'duels' ? 'block' : 'none';
+        console.log('🎨 [VISUAL] Updating visual displays for gameType:', gameType);
+        if (ffaVisual) {
+            ffaVisual.style.display = gameType === 'ffa' ? 'block' : 'none';
+            console.log('🎨 [VISUAL] FFA visual display set to:', ffaVisual.style.display);
+        }
+        if (teamsVisual) {
+            teamsVisual.style.display = gameType === 'teams' ? 'block' : 'none';
+            console.log('🎨 [VISUAL] Teams visual display set to:', teamsVisual.style.display);
+        }
+        if (duelsVisual) {
+            duelsVisual.style.display = gameType === 'duels' ? 'block' : 'none';
+            console.log('🎨 [VISUAL] Duels visual display set to:', duelsVisual.style.display);
+        }
         
         // Show/hide FFA timer settings (only for host when in FFA mode)
         const ffaTimerSection = document.getElementById('ffaTimerSection');
@@ -1960,6 +2270,14 @@ class DemonListGuessr {
             // Only show FFA timer for host players when game type is FFA
             const shouldShowTimer = gameType === 'ffa' && this.isHost;
             ffaTimerSection.style.display = shouldShowTimer ? 'block' : 'none';
+        }
+        
+        // Hide Game Mode section for FFA (since FFA only needs timer settings)
+        const partyGameModeSection = document.getElementById('partyGameModeSection');
+        if (partyGameModeSection) {
+            // Hide Game Mode section when in FFA mode (use dedicated FFA timer instead)
+            const shouldShowGameMode = gameType !== 'ffa';
+            partyGameModeSection.style.display = shouldShowGameMode ? 'block' : 'none';
         }
         
         console.log('🎨 [CLIENT] Game type visual sections updated - FFA:', gameType === 'ffa', 'Teams:', gameType === 'teams', 'Duels:', gameType === 'duels');
@@ -2013,6 +2331,10 @@ class DemonListGuessr {
 
     startGame() {
         console.log('[DEBUG] Starting game...');
+        
+        // Reset quit flag when starting a new game
+        this.userHasQuit = false;
+        
         try {
             const mainList = document.getElementById('mainList').checked;
             const extendedList = document.getElementById('extendedList').checked;
@@ -2101,16 +2423,30 @@ class DemonListGuessr {
             const usedDemons = this.currentGame.rounds.map(r => r.demon.id);
             const availableDemons = eligibleDemons.filter(d => !usedDemons.includes(d.id));
             
+            console.log('🎲 [DEMON SELECTION] Random selection debug:', {
+                currentRound: this.currentGame.currentRound,
+                roundForSeed: roundForSeed,
+                seedString: seedString,
+                eligibleCount: eligibleDemons.length,
+                usedDemonsCount: usedDemons.length,
+                usedDemonIds: usedDemons,
+                availableCount: availableDemons.length,
+                seed: this.currentGame.seed
+            });
             
             if (availableDemons.length === 0) {
                 // If all demons used, use all eligible demons again
-                randomDemon = eligibleDemons[Math.floor(rng() * eligibleDemons.length)];
+                const rngValue = rng();
+                const index = Math.floor(rngValue * eligibleDemons.length);
+                randomDemon = eligibleDemons[index];
+                console.log('🎲 [DEMON] All used - recycling from eligible:', { rngValue, index, selected: randomDemon?.name });
             } else {
                 const rngValue = rng();
                 const arrayLength = availableDemons.length;
                 const index = Math.floor(rngValue * arrayLength);
                 
                 randomDemon = availableDemons[index];
+                console.log('🎲 [DEMON] Selected from available:', { rngValue, arrayLength, index, selected: randomDemon?.name });
             }
         }
         
@@ -2136,7 +2472,7 @@ class DemonListGuessr {
         document.getElementById('currentRound').textContent = this.currentGame.currentRound;
         document.getElementById('currentScore').textContent = this.currentGame.score;
         
-        // Update multiplier display for duels
+        // Update multiplier display for duels only
         if (this.currentGame.gameType === 'duels' && this.currentGame.duelState) {
             const roundCounter = document.querySelector('.round-counter');
             if (roundCounter) {
@@ -2150,14 +2486,34 @@ class DemonListGuessr {
                 })();
                 multiplierDisplay.textContent = `(${multiplier.toFixed(1)}x damage)`;
             }
+        } else {
+            // Hide/remove multiplier display for non-duel games (FFA, teams)
+            const multiplierDisplay = document.getElementById('multiplierDisplay');
+            if (multiplierDisplay) {
+                multiplierDisplay.style.display = 'none';
+            }
         }
         
         // Show duel health display for duels and reset state
         if (this.currentGame.gameType === 'duels') {
-            this.updateDuelDisplay();
-            
-            // Reset duel state for new round - but NEVER reset duelWinner!
-            if (this.currentGame.duelState && !this.currentGame.duelWinner) {
+            // Only update duel display on first round to avoid HP bar movement on subsequent rounds
+            if (this.currentGame.currentRound === 1) {
+                this.updateDuelDisplay();
+                console.log('🔄 [ROUND 1] Updated duel display for first round');
+            } else {
+                console.log('🔄 [ROUND ' + this.currentGame.currentRound + '] Skipping duel display update to prevent HP bar movement');
+            }
+        } else {
+            // CRITICAL FIX: Hide duel health display for non-duel games (FFA, teams, solo)
+            const healthDisplay = document.getElementById('duelHealthDisplay');
+            if (healthDisplay) {
+                healthDisplay.style.display = 'none';
+                console.log('🔄 [NON-DUEL] Hidden health display for', this.currentGame.gameType, 'game');
+            }
+        }
+        
+        // Reset duel state for new round - but NEVER reset duelWinner!
+        if (this.currentGame.gameType === 'duels' && this.currentGame.duelState && !this.currentGame.duelWinner) {
                 this.currentGame.duelState.roundScores = {};
                 this.currentGame.duelState.roundGuesses = {};
                 this.currentGame.duelState.clashReady = false;
@@ -2172,57 +2528,69 @@ class DemonListGuessr {
                     clearInterval(this.currentGame.duelState.countdownInterval);
                     this.currentGame.duelState.countdownInterval = null;
                 }
-                
-            } else if (this.currentGame.duelWinner) {
-            }
-            
-            // Clear pending results from previous round
-            this.currentGame.pendingResults = null;
-            
-            // Remove any lingering duel UI overlays - FORCE CLEANUP
-            
-            const waitingOverlay = document.getElementById('duelWaitingOverlay');
-            if (waitingOverlay) {
-                waitingOverlay.remove();
-                console.log('🧹 Removed lingering waiting overlay');
-            }
-            
-            const clashScreen = document.getElementById('clashScreen');
-            if (clashScreen) {
-                clashScreen.remove();
-                console.log('🧹 Removed lingering clash screen');
-            }
-            
-            const detailedResults = document.getElementById('detailedDuelResults');
-            if (detailedResults) {
-                detailedResults.remove();
-                console.log('🧹 Removed lingering detailed results');
-            }
-            
-            const opponentNotification = document.querySelector('.opponent-submitted-notification');
-            if (opponentNotification) {
-                opponentNotification.remove();
-                console.log('🧹 Removed opponent notification');
-            }
-            
-            // Also remove any overlays with generic class names
-            document.querySelectorAll('[id*="duel"], [id*="clash"], [id*="waiting"]').forEach(overlay => {
-                if (overlay.style.position === 'fixed' && overlay.style.zIndex > 1000) {
-                    overlay.remove();
-                    console.log('🧹 Removed generic duel overlay:', overlay.id);
-                }
-            });
+        } else if (this.currentGame.duelWinner) {
+            // Duel is already over, no need to cleanup
         }
+        
+        // Clear pending results from previous round
+        this.currentGame.pendingResults = null;
+        
+        // Remove any lingering duel UI overlays - FORCE CLEANUP
+        
+        const waitingOverlay = document.getElementById('duelWaitingOverlay');
+        if (waitingOverlay) {
+            waitingOverlay.remove();
+            console.log('🧹 Removed lingering waiting overlay');
+        }
+        
+        const clashScreen = document.getElementById('clashScreen');
+        if (clashScreen) {
+            clashScreen.remove();
+            console.log('🧹 Removed lingering clash screen');
+        }
+        
+        const detailedResults = document.getElementById('detailedDuelResults');
+        if (detailedResults) {
+            detailedResults.remove();
+            console.log('🧹 Removed lingering detailed results');
+        }
+        
+        const opponentNotification = document.querySelector('.opponent-submitted-notification');
+        if (opponentNotification) {
+            opponentNotification.remove();
+            console.log('🧹 Removed opponent notification');
+        }
+        
+        // Also remove any overlays with generic class names
+        document.querySelectorAll('[id*="duel"], [id*="clash"], [id*="waiting"]').forEach(overlay => {
+            if (overlay.style.position === 'fixed' && overlay.style.zIndex > 1000) {
+                overlay.remove();
+                console.log('🧹 Removed generic duel overlay:', overlay.id);
+            }
+        });
         
         // Extract video ID from URL if needed
         const videoId = (randomDemon?.video?.includes('youtube.com') || randomDemon?.video?.includes('youtu.be')) 
             ? this.extractVideoId(randomDemon.video) 
             : randomDemon?.video;
+            
+        console.log('🎥 [VIDEO DEBUG] New round video loading:', {
+            round: this.currentGame.currentRound,
+            demonName: randomDemon?.name,
+            demonId: randomDemon?.id,
+            demonPosition: randomDemon?.position,
+            videoUrl: randomDemon?.video,
+            extractedVideoId: videoId,
+            difficulty: this.currentGame.difficulty,
+            gameType: this.currentGame.gameType
+        });
         
         // Load media based on difficulty
         if (this.currentGame.difficulty === 'thumbnail') {
+            console.log('🎥 [VIDEO] Loading thumbnail for round', this.currentGame.currentRound);
             this.loadThumbnail(videoId);
         } else {
+            console.log('🎥 [VIDEO] Loading YouTube video for round', this.currentGame.currentRound);
             this.loadYouTubeVideo(videoId);
         }
         
@@ -2316,6 +2684,13 @@ class DemonListGuessr {
         let timeLeft = seconds;
         
         this.currentTimer = setInterval(() => {
+            // Check if user has quit before continuing timer
+            if (this.userHasQuit) {
+                console.log('🚪 [QUIT] Stopping timer because user has quit');
+                clearInterval(this.currentTimer);
+                return;
+            }
+            
             timerDisplay.textContent = `${timeLeft}s`;
             timeLeft--;
             
@@ -2383,8 +2758,13 @@ class DemonListGuessr {
         console.log('[DEBUG] SUBMIT GUESS CALLED - Game Type:', this.currentGame?.gameType, 'Timeout:', timeout);
         this.logGameState('Submit guess');
         
-        if (this.currentTimer) {
+        // Only clear timer if it's a timeout or not FFA mode
+        // In FFA, timer should keep running for other players
+        if (this.currentTimer && (timeout || this.currentGame?.gameType !== 'ffa')) {
+            console.log('⏰ [TIMER] Clearing timer - timeout:', timeout, 'gameType:', this.currentGame?.gameType);
             clearInterval(this.currentTimer);
+        } else if (this.currentTimer && this.currentGame?.gameType === 'ffa') {
+            console.log('⏰ [TIMER] Keeping timer running for other FFA players');
         }
         
         const guessInput = document.getElementById('guessInput');
@@ -2448,7 +2828,10 @@ class DemonListGuessr {
                 points: points
             };
             
-            // Show waiting screen like duels
+            // Show waiting screen for ALL players after they submit (not just first)
+            const submittedCount = Object.keys(this.currentGame.ffaRoundData || {}).length;
+            console.log('🎯 [FFA] Showing waiting screen - player submitted');
+            console.log('🎯 [FFA] Submitted count:', submittedCount, '/ Expected:', this.currentParty.members.length);
             this.showFFAWaitingState();
             
         } else if (this.currentGame.gameType === 'duels') {
@@ -2472,11 +2855,14 @@ class DemonListGuessr {
             
             // Check if clash is already ready (both players submitted)
             if (this.currentGame.duelState.clashReady) {
+                // Both already submitted - clash will happen immediately
             } else if (opponentScore === undefined) {
-                // Opponent hasn't submitted yet - show waiting state
+                // We're first to submit - opponent hasn't submitted yet - show waiting state
                 this.showDuelWaitingState();
+            } else {
+                // Opponent already submitted - we're second - skip waiting screen, clash will trigger immediately
+                console.log('⚔️ [DUEL] Second to submit, skipping waiting screen');
             }
-            // If opponent already submitted, clash will trigger immediately
         } else {
             // Solo/non-duel mode - show results immediately
             this.showResult(guess, actual, points);
@@ -2486,6 +2872,12 @@ class DemonListGuessr {
 
     showFFAReveal() {
         console.log('🏆 [FFA] Showing FFA reveal screen');
+        
+        // Prevent showing FFA reveal if user has quit
+        if (this.userHasQuit) {
+            console.log('🚪 [QUIT] Ignoring showFFAReveal because user has quit');
+            return;
+        }
         
         // Remove waiting overlay
         const waitingOverlay = document.getElementById('ffaWaitingOverlay');
@@ -2527,14 +2919,14 @@ class DemonListGuessr {
                 name: member ? member.name : 'Unknown',
                 guess: data.guess,
                 score: data.score,
-                totalScore: data.totalScore,
+                totalScore: this.currentGame.ffaScores[playerId] || data.totalScore || 0,
                 isYou: playerId === currentUserId
             });
         }
         playerResults.sort((a, b) => b.score - a.score);
         
-        // Check if game is over
-        const isGameOver = this.currentGame.currentRound > this.currentGame.totalRounds;
+        // Check if game is over (>= because last round completion means game is over)
+        const isGameOver = this.currentGame.currentRound >= this.currentGame.totalRounds;
         const isHost = this.isHost;
         
         console.log('🎮 [FFA REVEAL] Screen setup:', {
@@ -2590,7 +2982,7 @@ class DemonListGuessr {
                                 </div>
                                 <div style="text-align: right;">
                                     <div style="font-size: 14px; color: #aaa;">
-                                        Guess: #${player.guess}
+                                        Guess: ${this.formatGuessDisplay(player.guess)}
                                     </div>
                                     <div style="font-size: 18px; font-weight: bold; color: ${player.score >= 80 ? '#4CAF50' : player.score >= 50 ? '#FFC107' : '#F44336'};">
                                         +${player.score} pts
@@ -2618,25 +3010,78 @@ class DemonListGuessr {
                     
                     <!-- Control Buttons -->
                     <div style="text-align: center;">
-                        ${isHost ? (
-                            isGameOver ? 
-                            `<button onclick="game.endFFAGame()" style="padding: 15px 40px; font-size: 18px; background: #ffd93d; color: #1a1a2e; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
+                        ${isGameOver ? 
+                            `<button id="${isHost ? 'ffaViewResultsBtn' : 'ffaViewResultsBtnNonHost'}" style="padding: 15px 40px; font-size: 18px; background: #ffd93d; color: #1a1a2e; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
                                 View Final Results
-                            </button>` :
-                            `<button onclick="game.nextFFARound()" style="padding: 15px 40px; font-size: 18px; background: #8b5cf6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
-                                Next Round
-                            </button>`
-                        ) : `
-                            <div style="padding: 15px; color: #888; font-style: italic; font-size: 16px;">
-                                ${isGameOver ? 'Waiting for host to show final results...' : 'Waiting for host to start next round...'}
-                            </div>
-                        `}
+                            </button>` : 
+                            (isHost ? 
+                                `<button onclick="game.nextFFARound()" style="padding: 15px 40px; font-size: 18px; background: #8b5cf6; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
+                                    Next Round
+                                </button>` :
+                                `<div style="padding: 15px; color: #888; font-style: italic; font-size: 16px;">
+                                    Waiting for host to start next round...
+                                </div>`
+                            )
+                        }
                     </div>
                 </div>
             </div>
         `;
         
         document.body.appendChild(revealScreen);
+        
+        // Add event listeners to View Final Results buttons for BOTH host and non-host
+        const hostBtn = document.getElementById('ffaViewResultsBtn');
+        const nonHostBtn = document.getElementById('ffaViewResultsBtnNonHost');
+        
+        console.log('🎯 [FFA] Looking for buttons...');
+        console.log('🎯 [FFA] Host button found:', !!hostBtn);
+        console.log('🎯 [FFA] Non-host button found:', !!nonHostBtn);
+        
+        // Function to handle "View Results" click for ANY player
+        const handleViewResults = (playerType) => {
+            console.log(`🔥🔥🔥 [FFA] View Final Results clicked by ${playerType}!`);
+            
+            // Remove the reveal screen
+            const revealScreen = document.getElementById('ffaRevealScreen');
+            if (revealScreen) revealScreen.remove();
+            
+            // Show results screen locally for this player
+            console.log(`🎯 [FFA] ${playerType} going to results screen locally`);
+            this.endGame();
+        };
+        
+        // Add listeners for host button
+        if (hostBtn) {
+            console.log('🎯 [FFA] Adding click listener to HOST View Final Results button');
+            hostBtn.onclick = () => handleViewResults('HOST');
+            hostBtn.addEventListener('click', () => handleViewResults('HOST'));
+        }
+        
+        // Add listeners for non-host button  
+        if (nonHostBtn) {
+            console.log('🎯 [FFA] Adding click listener to NON-HOST View Final Results button');
+            nonHostBtn.onclick = () => handleViewResults('NON-HOST');
+            nonHostBtn.addEventListener('click', () => handleViewResults('NON-HOST'));
+        }
+        
+        // Legacy support - keep existing logic for any remaining cases
+        const viewResultsBtn = hostBtn || nonHostBtn;
+        if (viewResultsBtn) {
+            viewResultsBtn.addEventListener('click', () => {
+                console.log('🔥🔥🔥 [FFA] View Final Results button clicked!');
+                
+                // Remove the reveal screen
+                const revealScreen = document.getElementById('ffaRevealScreen');
+                if (revealScreen) {
+                    revealScreen.remove();
+                }
+                
+                // Call endGame() - just for this player (no broadcast)
+                console.log('🎯 [FFA] Calling endGame() to show multiplayer results locally');
+                this.endGame();
+            });
+        }
     }
     
     nextFFARound() {
@@ -2672,18 +3117,30 @@ class DemonListGuessr {
     }
     
     endFFAGame() {
+        console.log('🔥🔥🔥 [FFA] endFFAGame() CALLED - View Final Results button clicked!');
+        console.log('🎯 [FFA] isHost:', this.isHost);
+        console.log('🎯 [FFA] gameType:', this.currentGame?.gameType);
+        console.log('🎯 [FFA] currentRound:', this.currentGame?.currentRound);
+        console.log('🎯 [FFA] Stack trace:', new Error().stack);
+        
         if (!this.isHost) {
             console.log('🚫 [FFA] Only host can end game');
             return;
         }
         
-        // Remove reveal screen
-        const revealScreen = document.getElementById('ffaRevealScreen');
-        if (revealScreen) {
-            revealScreen.remove();
+        console.log('🎯 [FFA] 🚀 IMPLEMENTING VIEW RESULTS FORCING SOLUTION');
+        
+        // NEW: Use our forcing solution instead of traditional endFFAGame
+        if (this.currentGame.isParty && window.multiplayerManager) {
+            console.log('🎯 [FFA] Host broadcasting showFinalResults to all players');
+            window.multiplayerManager.socket.emit('showFinalResults', {
+                partyCode: this.currentParty?.code
+            });
+            console.log('🎯 [FFA] showFinalResults broadcast sent - forcing both players to results');
         }
         
-        // End the game
+        // Also do local transition for host (in case server broadcast fails)
+        console.log('🎯 [FFA] Local transition to results screen for host');
         this.endGame();
     }
     
@@ -2928,54 +3385,35 @@ class DemonListGuessr {
         
         console.log('⚔️ CLASH!', {player1Score, player2Score});
         
-        // Calculate damage
+        // Calculate preliminary damage for display (server will override with authoritative values)
         const scoreDifference = Math.abs(player1Score - player2Score);
         const baseDamage = scoreDifference; // Full difference as damage
-        const finalDamage = Math.floor(baseDamage * this.currentGame.duelState.roundMultiplier);
+        const preliminaryDamage = Math.floor(baseDamage * this.currentGame.duelState.roundMultiplier);
         
-        // Apply damage to lower scorer
-        let combatResult = '';
         const currentUserId = this.getCurrentUserId();
-        
-        console.log('⚔️ DAMAGE CALCULATION:');
-        console.log('Player 1 Score:', player1Score, 'Player 2 Score:', player2Score, 'Damage:', finalDamage);
-        console.log('Before damage - P1 HP:', this.currentGame.duelHealth[player1Id], 'P2 HP:', this.currentGame.duelHealth[player2Id]);
+        let combatResult = '';
         
         if (player1Score > player2Score) {
-            this.currentGame.duelHealth[player2Id] -= finalDamage;
             console.log('💥 Player 1 wins round - damage to Player 2');
             combatResult = player1Id === currentUserId ? 
-                `You dealt ${finalDamage} damage! (${player1Score} vs ${player2Score})` :
-                `Opponent dealt ${finalDamage} damage! (${player2Score} vs ${player1Score})`;
+                `You dealt ${preliminaryDamage} damage! (${player1Score} vs ${player2Score})` :
+                `Opponent dealt ${preliminaryDamage} damage! (${player2Score} vs ${player1Score})`;
         } else if (player2Score > player1Score) {
-            this.currentGame.duelHealth[player1Id] -= finalDamage;
             console.log('💥 Player 2 wins round - damage to Player 1');
             combatResult = player2Id === currentUserId ?
-                `You dealt ${finalDamage} damage! (${player2Score} vs ${player1Score})` :
-                `Opponent dealt ${finalDamage} damage! (${player1Score} vs ${player2Score})`;
+                `You dealt ${preliminaryDamage} damage! (${player2Score} vs ${player1Score})` :
+                `Opponent dealt ${preliminaryDamage} damage! (${player1Score} vs ${player2Score})`;
         } else {
             console.log('🤝 Draw round - no damage');
             combatResult = `Perfect tie! No damage dealt (${player1Score} vs ${player2Score})`;
         }
         
-        console.log('After damage - P1 HP:', this.currentGame.duelHealth[player1Id], 'P2 HP:', this.currentGame.duelHealth[player2Id]);
-        
-        // Ensure health doesn't go below 0
-        this.currentGame.duelHealth[player1Id] = Math.max(0, this.currentGame.duelHealth[player1Id]);
-        this.currentGame.duelHealth[player2Id] = Math.max(0, this.currentGame.duelHealth[player2Id]);
-        
-        // Store combat result
-        this.currentGame.lastCombatResult = {
-            player1Score,
-            player2Score,
-            damage: finalDamage,
-            multiplier: this.currentGame.duelState.roundMultiplier,
-            result: combatResult
-        };
-        
-        // Also store in clashData for display
-        this.currentGame.clashData.damage = finalDamage;
+        // Store preliminary clash data (server will update with authoritative values)
+        this.currentGame.clashData.damage = preliminaryDamage;
         this.currentGame.clashData.combatResult = combatResult;
+        
+        // NOTE: Do NOT modify actual health here - server handles that
+        console.log('Preliminary damage calculated:', preliminaryDamage, '(Server will send authoritative values)');
         
         // Store guess data in clashData before it gets reset
         this.currentGame.clashData.roundGuesses = { ...this.currentGame.duelState.roundGuesses };
@@ -2983,110 +3421,12 @@ class DemonListGuessr {
         // Update health display immediately
         this.updateDuelDisplay();
         
-        // CRITICAL: Skip ALL client-side damage calculation if we have server health
-        console.log('🔴🔴🔴 DAMAGE CALCULATION CHECK:');
-        console.log('  Has Server Health Flag:', this.currentGame.hasServerHealth);
-        console.log('  Current Health Values:', JSON.stringify(this.currentGame.duelHealth));
-        console.log('  Player 1 Score:', player1Score);
-        console.log('  Player 2 Score:', player2Score);
-        console.log('  Current Round:', this.currentGame.currentRound);
-        console.log('  Round Multiplier:', this.currentGame.duelState.roundMultiplier);
+        // CRITICAL: Server is completely authoritative for damage calculation
+        console.log('🟢 [CLASH] Server will calculate damage with multipliers - no client-side calculation needed');
+        console.log('🟢 [CLASH] Waiting for server damage result with correct multiplier values...');
         
-        if (this.currentGame.hasServerHealth) {
-            // DO NOT MODIFY HEALTH - Server is authoritative
-            console.log('🟢 USING SERVER HEALTH - SKIPPING CLIENT DAMAGE CALCULATION');
-            // NOTE: Flag will be cleared when new round starts, not here
-        } else {
-            console.log('🔴 NO SERVER HEALTH FLAG - FALLING BACK TO CLIENT CALCULATION');
-            // FALLBACK: CLIENT-SIDE DAMAGE CALCULATION (only if no server data)
-            const clientScoreDiff = Math.abs(player1Score - player2Score);
-            const clientDamage = Math.floor(clientScoreDiff * (this.currentGame.duelState.roundMultiplier || 1.0));
-            
-            console.log('⚔️ CLIENT DAMAGE CALC:', {
-                p1Score: player1Score,
-                p2Score: player2Score,
-                difference: clientScoreDiff,
-                multiplier: this.currentGame.duelState.roundMultiplier,
-                damage: clientDamage
-            });
-            
-            // DEFENSIVE: Check if health would go negative before applying damage
-            console.log('💣💣💣 APPLYING CLIENT DAMAGE:');
-            console.log('  Damage Amount:', clientDamage);
-            console.log('  Health BEFORE damage:', JSON.stringify(this.currentGame.duelHealth));
-            
-            // Apply damage locally
-            if (player1Score > player2Score) {
-                const oldHealth = this.currentGame.duelHealth[player2Id];
-                const newHealth = Math.max(0, oldHealth - clientDamage);
-                
-                console.log(`  Player 2 taking damage: ${oldHealth} -> ${newHealth} (-${clientDamage})`);
-                
-                // DEFENSIVE: Only apply damage if it makes sense
-                if (oldHealth > 0) {
-                    this.currentGame.duelHealth[player2Id] = newHealth;
-                } else {
-                }
-                
-                // Broadcast health update to sync both players
-                if (window.multiplayerManager && this.isHost) {
-                    const healthUpdate = { 
-                    type: 'healthUpdate', 
-                    health: { ...this.currentGame.duelHealth },
-                    damage: clientDamage,
-                    winner: player1Id 
-                };
-                    // Note: We'd need server support for this, but for now force both clients to sync
-                }
-            } else if (player2Score > player1Score) {
-                const oldHealth = this.currentGame.duelHealth[player1Id];
-                const newHealth = Math.max(0, oldHealth - clientDamage);
-                
-                
-                // DEFENSIVE: Only apply damage if it makes sense
-                if (oldHealth > 0) {
-                    this.currentGame.duelHealth[player1Id] = newHealth;
-                } else {
-                }
-                
-                if (window.multiplayerManager && this.isHost) {
-                    const healthUpdate = { 
-                        type: 'healthUpdate', 
-                        health: { ...this.currentGame.duelHealth },
-                        damage: clientDamage,
-                        winner: player2Id 
-                    };
-                }
-            }
-        }
-        
-        // CRITICAL: Skip client-side victory checks when using server authority
-        // The server will handle victory detection and send duelVictory events
-        if (this.currentGame.hasServerHealth) {
-            console.log('🏆 [CLIENT] Server is handling victory detection - skipping client victory check');
-            console.log('🏆 [CLIENT] Current health from server - Player 1 HP:', this.currentGame.duelHealth[player1Id], 'Player 2 HP:', this.currentGame.duelHealth[player2Id]);
-        } else {
-            // FALLBACK: Client-side victory check (only when no server authority)
-            console.log('🏆 [CLIENT] Checking victory condition - Player 1 HP:', this.currentGame.duelHealth[player1Id], 'Player 2 HP:', this.currentGame.duelHealth[player2Id]);
-            
-            if (this.currentGame.duelHealth[player1Id] === 0) {
-                console.log('🏆 [CLIENT] Player 1 eliminated - Player 2 wins! (Waiting for server confirmation)');
-                // DO NOT set duelWinner here - wait for server's duelVictory event
-                
-            } else if (this.currentGame.duelHealth[player2Id] === 0) {
-                console.log('🏆 [CLIENT] Player 2 eliminated - Player 1 wins! (Waiting for server confirmation)');
-                // DO NOT set duelWinner here - wait for server's duelVictory event
-                
-            } else {
-                console.log('🔄 [CLIENT] Both players alive - battle continues...');
-            }
-        }
-        
-        // Increase multiplier for next round (but not after the first round)
-        if (this.currentGame.currentRound > 1) {
-            this.currentGame.duelState.roundMultiplier += 0.2; // +0.2x each round after first
-        } else {
-        }
+        // CRITICAL: Server handles multiplier management - no client-side multiplier changes
+        console.log('🟢 [CLASH] Server will handle multiplier increments for next round');
         
         // Reset round scores and guesses for next round
         this.currentGame.duelState.roundScores = {};
@@ -3110,9 +3450,21 @@ class DemonListGuessr {
             notification.remove();
         }
         
-        // Show custom clash screen first
-        this.showClashScreen(player1Score, player2Score, finalDamage, combatResult);
+        // Show custom clash screen immediately (server will update damage later)
+        console.log('🎭 [CLASH] Showing clash screen with preliminary damage calculation...');
         
+        // Show clash screen immediately - damage will be corrected by server if needed
+        this.showClashScreen(player1Score, player2Score, this.currentGame.clashData.damage, this.currentGame.clashData.combatResult);
+        
+        // CRITICAL: Continue with essential game flow logic (independent of damage calculation)
+        
+        // Server handles multiplier increments - no client-side multiplier changes needed
+        console.log('🟢 [CLASH] Server manages multiplier progression');
+        
+        // Reset round scores and guesses for next round
+        this.currentGame.duelState.roundScores = {};
+        // Note: Don't reset roundGuesses here - they're needed for the detailed results screen
+        // They will be reset when starting the next round
         
         // DEFENSIVE: Clear the clash in progress flag
         this.currentGame.duelState.clashInProgress = false;
@@ -3209,10 +3561,10 @@ class DemonListGuessr {
                     position: absolute;
                 }
                 .clash-number.left {
-                    animation: clashLeft 1.5s cubic-bezier(0.2, 0, 0.05, 1) both;
+                    animation: clashLeft 1.5s cubic-bezier(0.25, 0, 0.25, 1) both;
                 }
                 .clash-number.right {
-                    animation: clashRight 1.5s cubic-bezier(0.2, 0, 0.05, 1) both;
+                    animation: clashRight 1.5s cubic-bezier(0.25, 0, 0.25, 1) both;
                 }
                 .clash-damage {
                     font-size: 80px;
@@ -3410,7 +3762,7 @@ class DemonListGuessr {
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
                                 <p style="color: #aaa; font-size: 14px; margin: 0;">${isPlayer1 ? 'Your Guess' : 'Their Guess'}</p>
-                                <p style="color: #ffd93d; font-weight: bold; font-size: 24px; margin: 5px 0;">#${player1Guess}</p>
+                                <p style="color: #ffd93d; font-weight: bold; font-size: 24px; margin: 5px 0;">${this.formatGuessDisplay(player1Guess)}</p>
                             </div>
                             <div>
                                 <p style="color: #aaa; font-size: 14px; margin: 0;">Points</p>
@@ -3427,7 +3779,7 @@ class DemonListGuessr {
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
                                 <p style="color: #aaa; font-size: 14px; margin: 0;">${!isPlayer1 ? 'Your Guess' : 'Their Guess'}</p>
-                                <p style="color: #ffd93d; font-weight: bold; font-size: 24px; margin: 5px 0;">#${player2Guess}</p>
+                                <p style="color: #ffd93d; font-weight: bold; font-size: 24px; margin: 5px 0;">${this.formatGuessDisplay(player2Guess)}</p>
                             </div>
                             <div>
                                 <p style="color: #aaa; font-size: 14px; margin: 0;">Points</p>
@@ -3451,7 +3803,7 @@ class DemonListGuessr {
                                 box-shadow: 0 4px 15px rgba(0,0,0,0.3);
                                 transition: transform 0.2s;
                             " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                                ${this.currentGame.duelWinner ? 'View Results' : 'Next Round'}
+                                ${this.currentGame.duelWinner ? 'View Summary' : 'Next Round'}
                             <!-- DEBUG: Winner=${this.currentGame.duelWinner}, Host=${this.isHost} -->
                             </button>
                         </div>
@@ -3559,6 +3911,12 @@ class DemonListGuessr {
     handleOpponentScore(data) {
         console.log('🎯🎯🎯 [OPPONENT SCORE] handleOpponentScore called with data:', JSON.stringify(data, null, 2));
         
+        // Prevent handling opponent score if user has quit
+        if (this.userHasQuit) {
+            console.log('🚪 [QUIT] Ignoring handleOpponentScore because user has quit');
+            return;
+        }
+        
         // Handle FFA score updates
         if (this.currentGame.gameType === 'ffa') {
             const scores = data.scores || {};
@@ -3568,11 +3926,17 @@ class DemonListGuessr {
             console.log('📊 [CLIENT] Received totalScores from server:', totalScores);
             console.log('📊 [CLIENT] Current local ffaScores before update:', this.currentGame.ffaScores);
             
-            // Update all player scores from server
+            // Update all player scores from server (CRITICAL FIX for score desync)
             for (const [playerId, totalScore] of Object.entries(totalScores)) {
-                if (this.currentGame.ffaScores && totalScore !== undefined) {
-                    this.currentGame.ffaScores[playerId] = totalScore;
-                    console.log('🏆 [FFA] Updated score from server for', playerId, ':', totalScore);
+                if (totalScore !== undefined) {
+                    // Update BOTH scoring systems to keep them in sync
+                    if (this.currentGame.ffaScores) {
+                        this.currentGame.ffaScores[playerId] = totalScore;
+                    }
+                    if (this.currentGame.playerScores) {
+                        this.currentGame.playerScores[playerId] = totalScore;
+                    }
+                    console.log('🏆 [FFA SYNC FIX] Updated scores for', playerId, ':', totalScore);
                 }
             }
             
@@ -3683,20 +4047,60 @@ class DemonListGuessr {
             
             // CRITICAL: Update health from server - this is the authoritative health
             if (data.damageResult.health) {
-                console.log('[DEBUG] Updating health from server:', data.damageResult.health);
-                console.log('[DEBUG] Previous health:', this.currentGame.duelHealth);
+                console.log('[HEALTH SYNC] Receiving server health update:', data.damageResult.health);
+                console.log('[HEALTH SYNC] Previous client health:', this.currentGame.duelHealth);
                 
+                // Store the old health for comparison
+                const oldHealth = { ...this.currentGame.duelHealth };
+                
+                // Apply server health (authoritative)
                 this.currentGame.duelHealth = { ...data.damageResult.health };
                 
                 // Mark that we have server health so we don't overwrite it
                 this.currentGame.hasServerHealth = true;
                 
-                console.log('[DEBUG] New health after server update:', this.currentGame.duelHealth);
+                console.log('[HEALTH SYNC] Updated to server health:', this.currentGame.duelHealth);
                 console.log('🟢🟢🟢 SERVER HEALTH APPLIED - hasServerHealth flag set to true');
+                
+                // Check for victory condition based on server health
+                const player1Id = this.currentParty.members[0].id;
+                const player2Id = this.currentParty.members[1].id;
+                
+                if (this.currentGame.duelHealth[player1Id] <= 0 || this.currentGame.duelHealth[player2Id] <= 0) {
+                    console.log('[HEALTH SYNC] Victory condition detected - someone at 0 HP');
+                    console.log('[HEALTH SYNC] Waiting for server duelVictory event...');
+                    
+                    // CRITICAL FIX: Immediately update button text to prevent "Next Round" clicks
+                    const nextBtn = document.getElementById('nextRoundBtn');
+                    const duelNextBtn = document.getElementById('duelNextRoundBtn');
+                    
+                    if (nextBtn) {
+                        nextBtn.textContent = 'View Results';
+                        console.log('[HEALTH SYNC] Updated nextRoundBtn to "View Results"');
+                    }
+                    
+                    if (duelNextBtn) {
+                        duelNextBtn.textContent = 'View Results';
+                        console.log('[HEALTH SYNC] Updated duelNextRoundBtn to "View Results"');
+                    }
+                }
                 
                 // CRITICAL: Update the display immediately after receiving server health
                 this.updateDuelDisplay();
-                console.log('[DEBUG] Called updateDuelDisplay after server health update');
+                console.log('[HEALTH SYNC] Display updated with server health');
+                
+                // CRITICAL: Update clash screen damage if it's currently showing
+                if (data.damageResult.damage !== undefined) {
+                    console.log('🎭 [CLASH UPDATE] Updating clash screen with server damage:', data.damageResult.damage);
+                    
+                    // Update clash screen DOM if it exists
+                    const clashScreen = document.getElementById('clashScreen');
+                    const damageElement = clashScreen?.querySelector('.clash-damage');
+                    if (clashScreen && damageElement) {
+                        damageElement.textContent = `-${data.damageResult.damage}`;
+                        console.log('🎭 [CLASH UPDATE] Updated clash screen damage display');
+                    }
+                }
             }
         }
         
@@ -3985,6 +4389,14 @@ class DemonListGuessr {
             return;
         }
         
+        // Check if we're in clash mode or detailed results screen - don't update in these states
+        const clashScreen = document.getElementById('clashScreen');
+        const detailedResults = document.getElementById('detailedDuelResults');
+        if (clashScreen || detailedResults) {
+            console.log('🚫 [HEALTH BAR] Skipping update - in clash screen or detailed results view');
+            return;
+        }
+        
         console.log('  Current User ID:', this.getCurrentUserId());
         console.log('  Is Host:', this.isHost);
         console.log('  Duel Health Object:', JSON.stringify(this.currentGame.duelHealth));
@@ -4011,10 +4423,11 @@ class DemonListGuessr {
         const myHealth = this.currentGame.duelHealth[currentUserId] || 0;
         const opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
         
-        console.log('🩺 HEALTH MAPPING DEBUG (FIXED):');
+        console.log('🩺 HEALTH MAPPING DEBUG (ENHANCED):');
         console.log('  Current User ID:', currentUserId, '→ My Health:', myHealth);
         console.log('  Opponent ID:', opponentId, '→ Opponent Health:', opponentHealth);
         console.log('  Full duelHealth object:', this.currentGame.duelHealth);
+        console.log('  Health bars will show: You=' + myHealth + '/100, Opponent=' + opponentHealth + '/100');
         
         // Map to UI elements: player1 = "You", player2 = "Opponent"
         const player1Health = myHealth;        // "You" health bar
@@ -4029,38 +4442,59 @@ class DemonListGuessr {
         const player2Value = document.getElementById('player2HealthValue');
         
         if (player1Bar) {
+            console.log('🔧 [HEALTH BAR] Updating player1Bar (You) to:', player1HealthPercent + '%', 'Health:', player1Health);
             player1Bar.style.width = `${player1HealthPercent}%`;
             // Color coding: green > 50%, yellow 10-50%, red <= 10%
             if (player1Health > 50) {
                 player1Bar.style.background = '#4CAF50'; // Green - override gradient
                 player1Bar.style.backgroundColor = '#4CAF50';
+                console.log('🔧 [HEALTH BAR] Player1Bar set to GREEN');
             } else if (player1Health > 10) {
                 player1Bar.style.background = '#FFC107'; // Yellow - override gradient
                 player1Bar.style.backgroundColor = '#FFC107';  
+                console.log('🔧 [HEALTH BAR] Player1Bar set to YELLOW');
             } else {
                 player1Bar.style.background = '#F44336'; // Red - override gradient
                 player1Bar.style.backgroundColor = '#F44336';
+                console.log('🔧 [HEALTH BAR] Player1Bar set to RED');
             }
+        } else {
+            console.error('❌ [HEALTH BAR] player1Bar element not found!');
         }
         if (player2Bar) {
+            console.log('🔧 [HEALTH BAR] Updating player2Bar (Opponent) to:', player2HealthPercent + '%', 'Health:', player2Health);
             player2Bar.style.width = `${player2HealthPercent}%`;
             // Color coding: green > 50%, yellow 10-50%, red <= 10%
             if (player2Health > 50) {
                 player2Bar.style.background = '#4CAF50'; // Green - override gradient
                 player2Bar.style.backgroundColor = '#4CAF50';
+                console.log('🔧 [HEALTH BAR] Player2Bar set to GREEN');
             } else if (player2Health > 10) {
                 player2Bar.style.background = '#FFC107'; // Yellow - override gradient
                 player2Bar.style.backgroundColor = '#FFC107';
+                console.log('🔧 [HEALTH BAR] Player2Bar set to YELLOW');
             } else {
                 player2Bar.style.background = '#F44336'; // Red - override gradient
                 player2Bar.style.backgroundColor = '#F44336';
+                console.log('🔧 [HEALTH BAR] Player2Bar set to RED');
             }
+        } else {
+            console.error('❌ [HEALTH BAR] player2Bar element not found!');
         }
-        if (player1Value) player1Value.textContent = `${player1Health}/100`;
-        if (player2Value) player2Value.textContent = `${player2Health}/100`;
+        if (player1Value) {
+            console.log('💉 [HEALTH TEXT UPDATE] Setting player1Value (You) to:', `${player1Health}/100`);
+            player1Value.textContent = `${player1Health}/100`;
+        }
+        if (player2Value) {
+            console.log('💉 [HEALTH TEXT UPDATE] Setting player2Value (Opponent) to:', `${player2Health}/100`);
+            player2Value.textContent = `${player2Health}/100`;
+        }
         
-        // Show combat result and multiplier info
-        if (this.currentGame.lastCombatResult) {
+        // CRITICAL: Health bars are properly handled by the clash screen's inline templates
+        // and detailed results screen's embedded health values - no additional updates needed
+        
+        // Show combat result and multiplier info for duels only
+        if (this.currentGame.lastCombatResult && this.currentGame.gameType === 'duels') {
             const combatResult = document.getElementById('duelCombatResult');
             const combatDetails = document.getElementById('combatDetails');
             const multiplier = document.getElementById('currentMultiplier');
@@ -4073,6 +4507,12 @@ class DemonListGuessr {
             }
             if (multiplier && this.currentGame.duelState) {
                 multiplier.textContent = `${this.currentGame.duelState.roundMultiplier.toFixed(1)}x`;
+            }
+        } else {
+            // Hide multiplier display for non-duel games
+            const multiplier = document.getElementById('currentMultiplier');
+            if (multiplier) {
+                multiplier.style.display = 'none';
             }
         }
     }
@@ -4117,7 +4557,7 @@ class DemonListGuessr {
         
         document.getElementById('resultTitle').textContent = resultTitle;
         document.getElementById('actualPlacement').textContent = `#${actual}`;
-        document.getElementById('yourGuess').textContent = `#${guess}`;
+        document.getElementById('yourGuess').textContent = this.formatGuessDisplay(guess);
         document.getElementById('pointsEarned').textContent = `${points} points`;
         document.getElementById('levelName').textContent = demon.name;
         document.getElementById('levelId').textContent = demon.level_id || 'N/A';
@@ -4146,7 +4586,13 @@ class DemonListGuessr {
             console.log('🔍 [DEBUG] Setting button to "View Results" because duelWinner is:', this.currentGame.duelWinner);
             nextBtn.textContent = 'View Results';
         } else if (this.currentGame.currentRound >= this.currentGame.totalRounds && this.currentGame.gameType !== 'duels') {
-            nextBtn.textContent = 'End Game';
+            // 🎯 FIX: Use "View Results" for FFA games to trigger showFinalResults broadcast
+            if (this.currentGame.gameType === 'ffa' && this.currentGame.isParty) {
+                console.log('🔍 [DEBUG] Setting button to "View Results" for FFA final round');
+                nextBtn.textContent = 'View Results';
+            } else {
+                nextBtn.textContent = 'End Game';
+            }
         } else {
             nextBtn.textContent = 'Next Round';
         }
@@ -4198,6 +4644,36 @@ class DemonListGuessr {
         });
         this.logGameState('Next round');
         
+        // 🎯 Check if this is the "View Results" button being clicked
+        const nextBtn = document.getElementById('nextRoundBtn');
+        const buttonText = nextBtn?.textContent || '';
+        console.log('🎯 [BUTTON] Button clicked - nextRound() called');
+        console.log('🎯 [BUTTON] Button element found:', !!nextBtn);
+        console.log('🎯 [BUTTON] Button text when clicked:', JSON.stringify(buttonText));
+        console.log('🎯 [BUTTON] Button text trimmed:', JSON.stringify(buttonText.trim()));
+        console.log('🎯 [BUTTON] Button text === "View Results":', buttonText === 'View Results');
+        console.log('🎯 [BUTTON] Button text.trim() === "View Results":', buttonText.trim() === 'View Results');
+        
+        if (buttonText === 'View Results') {
+            console.log('🎯 [BUTTON] "View Results" clicked - forcing all players to results screen');
+            
+            if (this.currentGame.isParty && this.isHost) {
+                console.log('🎯 [BUTTON] Host broadcasting showFinalResults to all players');
+                // Broadcast to all players to show results
+                if (window.multiplayerManager) {
+                    window.multiplayerManager.socket.emit('showFinalResults', {
+                        partyCode: this.currentParty?.code
+                    });
+                    console.log('🎯 [BUTTON] showFinalResults broadcast sent');
+                }
+            }
+            
+            // Local transition to results
+            console.log('🎯 [BUTTON] Local transition to results screen');
+            this.endGame();
+            return;
+        }
+        
         // Check if duel is over (someone won)
         if (this.currentGame.duelWinner) {
             console.log('🎮 [CLIENT] Duel is over - showing final results');
@@ -4247,6 +4723,22 @@ class DemonListGuessr {
     }
 
     endGame() {
+        console.log('🔴 [DEBUG] ========== endGame() CALLED ==========');
+        
+        // Prevent showing results if user has quit
+        if (this.userHasQuit) {
+            console.log('🚪 [QUIT] Ignoring endGame because user has quit - staying on home screen');
+            return;
+        }
+        
+        console.log('🔴 [DEBUG] Game state:', {
+            gameType: this.currentGame?.gameType,
+            currentRound: this.currentGame?.currentRound,
+            isHost: this.isHost,
+            totalScores: this.currentGame?.totalScores,
+            currentScreen: document.querySelector('.screen.active')?.id
+        });
+        console.log('🔴 [DEBUG] Stack trace:', new Error().stack);
         
         // Clean up any remaining duel overlays
         const waitingOverlay = document.getElementById('duelWaitingOverlay');
@@ -4265,7 +4757,16 @@ class DemonListGuessr {
         }
         
         const finalScore = this.currentGame.score;
-        document.getElementById('finalScore').textContent = finalScore;
+        const finalScoreElement = document.getElementById('finalScore');
+        finalScoreElement.textContent = finalScore;
+        
+        // For duels, make the total score completely white instead of gradient
+        if (this.currentGame.gameType === 'duels') {
+            finalScoreElement.style.background = 'none';
+            finalScoreElement.style.webkitBackgroundClip = 'unset';
+            finalScoreElement.style.webkitTextFillColor = 'unset';
+            finalScoreElement.style.color = 'white';
+        }
         
         const roundSummary = document.getElementById('roundSummary');
         
@@ -4278,7 +4779,7 @@ class DemonListGuessr {
                         <strong>Round ${index + 1}:</strong> ${round.demon.name}
                     </div>
                     <div>
-                        Guess: #${round.guess} | Actual: #${round.actual} | Points: ${round.points}
+                        Guess: ${this.formatGuessDisplay(round.guess)} | Actual: #${round.actual} | Points: ${round.points}
                     </div>
                 </div>
             `).join('');
@@ -4308,7 +4809,11 @@ class DemonListGuessr {
             }
         }
         
+        console.log('🔴 [DEBUG] About to call showScreen("resultsScreen")');
+        console.log('🔴 [DEBUG] Current screen before transition:', document.querySelector('.screen.active')?.id);
         this.showScreen('resultsScreen');
+        console.log('🔴 [DEBUG] ✅ showScreen("resultsScreen") completed');
+        console.log('🔴 [DEBUG] Current screen after transition:', document.querySelector('.screen.active')?.id);
         
         // Change button text for duels
         if (this.currentGame?.isParty && this.currentGame?.gameType === 'duels') {
@@ -4358,7 +4863,7 @@ class DemonListGuessr {
                         ${this.currentGame.rounds.map((round, index) => `
                             <div class="round-item">
                                 <div><strong>Round ${index + 1}:</strong> ${round.demon.name}</div>
-                                <div>Your Guess: #${round.guess} | Actual: #${round.actual} | Points: ${round.points}</div>
+                                <div>Your Guess: ${this.formatGuessDisplay(round.guess)} | Actual: #${round.actual} | Points: ${round.points}</div>
                             </div>
                         `).join('')}
                     </div>
@@ -4398,7 +4903,7 @@ class DemonListGuessr {
                         ${this.currentGame.rounds.map((round, index) => `
                             <div class="round-item">
                                 <div><strong>Round ${index + 1}:</strong> ${round.demon.name}</div>
-                                <div>Your Guess: #${round.guess} | Actual: #${round.actual} | Points: ${round.points}</div>
+                                <div>Your Guess: ${this.formatGuessDisplay(round.guess)} | Actual: #${round.actual} | Points: ${round.points}</div>
                             </div>
                         `).join('')}
                     </div>
@@ -4429,15 +4934,15 @@ class DemonListGuessr {
             let opponentWon = false;
             
             if (myHealth > 0 && opponentHealth === 0) {
-                winMessage = '🏆 Victory! You defeated your opponent!';
+                winMessage = 'Victory';
                 this.currentGame.duelWinner = currentUserId;
                 youWon = true;
             } else if (myHealth === 0 && opponentHealth > 0) {
-                winMessage = '💀 Defeat! Your opponent overwhelmed you!';
+                winMessage = 'Defeat';
                 this.currentGame.duelWinner = isPlayer1 ? player2Id : player1Id;
                 opponentWon = true;
             } else if (myHealth === 0 && opponentHealth === 0) {
-                winMessage = '⚔️ Battle ended in a draw!';
+                winMessage = 'Draw';
             } else {
                 // Both still have health - shouldn't happen at game end
                 winMessage = '⚔️ Battle continues...';
@@ -4447,7 +4952,7 @@ class DemonListGuessr {
                 <div class="party-results">
                     <h3>Duel Results</h3>
                     <div class="duel-victory-message">
-                        <h2>${winMessage}</h2>
+                        <h2 style="color: ${youWon ? '#ffd93d' : opponentWon ? '#ff6b6b' : '#888'}; font-size: 48px; margin: 20px 0;">${winMessage}</h2>
                     </div>
                     <div class="duel-final-health">
                         <div class="final-health-display">
@@ -4496,7 +5001,7 @@ class DemonListGuessr {
                         ${this.currentGame.rounds.map((round, index) => `
                             <div class="round-item">
                                 <div><strong>Round ${index + 1}:</strong> ${round.demon.name}</div>
-                                <div>Your Guess: #${round.guess} | Actual: #${round.actual} | Points: ${round.points}</div>
+                                <div>Your Guess: ${this.formatGuessDisplay(round.guess)} | Actual: #${round.actual} | Points: ${round.points}</div>
                             </div>
                         `).join('')}
                     </div>
@@ -4516,6 +5021,13 @@ class DemonListGuessr {
     }
 
     backToLobby() {
+        // CRITICAL FIX: Hide duel health display when returning to lobby
+        const healthDisplay = document.getElementById('duelHealthDisplay');
+        if (healthDisplay) {
+            healthDisplay.style.display = 'none';
+            console.log('🔄 [LOBBY] Hidden health display when returning to lobby');
+        }
+        
         // For all multiplayer party games, go back to party setup screen
         if (this.currentGame?.isParty) {
             this.showScreen('partySetupScreen');
@@ -4527,8 +5039,95 @@ class DemonListGuessr {
 
     quitGame() {
         if (confirm('Are you sure you want to quit the current game?')) {
-            this.showScreen('homeScreen');
+            // Set flag to prevent any automatic screen transitions after quitting
+            console.log('🚪 [QUIT] User has quit - preventing automatic screen transitions');
+            this.userHasQuit = true;
+            
+            // Stop any running timer to prevent automatic guess submission
+            if (this.currentTimer) {
+                console.log('🚪 [QUIT] Clearing FFA timer to prevent automatic round completion');
+                clearInterval(this.currentTimer);
+                this.currentTimer = null;
+            }
+            
+            this.goHome();
         }
+    }
+    
+    // Comprehensive cleanup function to remove all game overlays and notifications
+    clearAllGameOverlays() {
+        console.log('🧹 [CLEANUP] Removing all game overlays and notifications');
+        
+        // List of all overlay/notification IDs to remove
+        const overlayIds = [
+            'ffaRevealScreen',
+            'ffaWaitingOverlay', 
+            'duelWaitingOverlay',
+            'opponentSubmittedNotification',
+            'clashScreen',
+            'detailedDuelResults',
+            'guessSubmittedOverlay',
+            'waitingOverlay'
+        ];
+        
+        // Remove by ID
+        overlayIds.forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+                console.log(`🧹 [CLEANUP] Removing ${id}`);
+                element.remove();
+            }
+        });
+        
+        // Remove any other overlays by class/querySelector
+        const additionalSelectors = [
+            '.overlay',
+            '.notification', 
+            '.waiting-screen',
+            '.reveal-screen',
+            '[id*="overlay"]',
+            '[id*="Overlay"]',
+            '[id*="notification"]',
+            '[id*="Notification"]'
+        ];
+        
+        additionalSelectors.forEach(selector => {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(element => {
+                // Don't remove permanent UI elements
+                if (!element.closest('#app') && !element.closest('.screen')) {
+                    console.log(`🧹 [CLEANUP] Removing element matching ${selector}`);
+                    element.remove();
+                }
+            });
+        });
+        
+        console.log('🧹 [CLEANUP] All overlays and notifications cleared');
+    }
+    
+    // Go home with full cleanup (for buttons that should leave party and clear overlays)
+    goHome() {
+        console.log('🏠 [HOME] Going home with full cleanup');
+        
+        // Reset quit flag since user is explicitly going home
+        this.userHasQuit = false;
+        
+        // Leave party if in one
+        if (this.currentParty) {
+            console.log('🚪 [HOME] Leaving party before going home');
+            this.leaveCurrentParty();
+        }
+        
+        // Clear all game overlays and notifications
+        this.clearAllGameOverlays();
+        
+        // Go to home screen
+        this.showScreen('homeScreen');
+    }
+    
+    // Helper function to format guess display (handles timeout case)
+    formatGuessDisplay(guess) {
+        return (guess === 999 || guess === null || guess === undefined) ? 'No guess submitted' : `#${guess}`;
     }
     
     leaveCurrentParty() {
@@ -4933,6 +5532,13 @@ class DemonListGuessr {
     
     // Set up multiplayer event callbacks
     setupMultiplayerCallbacks() {
+        console.log('🔧 [SETUP-2] setupMultiplayerCallbacks() called at:', new Date().toISOString());
+        console.log('🔧 [SETUP-2] Context:', {
+            isHost: this.isHost,
+            socketId: window.multiplayerManager?.socket?.id,
+            connected: window.multiplayerManager?.connected
+        });
+        
         if (!window.multiplayerManager) return;
         
         window.multiplayerManager.onConnected = () => {
@@ -4958,11 +5564,10 @@ class DemonListGuessr {
             alert('Failed to join party: ' + error.message);
         };
         
+        // CRITICAL: Add the missing onPartyUpdated callback for non-host players
         window.multiplayerManager.onPartyUpdated = (party) => {
-            console.log('[MULTIPLAYER] Party updated:', party.code);
-            this.currentParty = party;
-            this.isHost = (party.host === window.multiplayerManager.socket.id);
-            this.updatePartyDisplay();
+            console.log('🔥 [NON-HOST CALLBACK] onPartyUpdated triggered for non-host');
+            this.handlePartyUpdate(party);
         };
         
         // Add missing onGameStarted callback
@@ -4994,6 +5599,46 @@ class DemonListGuessr {
             console.log('🏆 [CLIENT] Duel victory received from server:', data);
             this.handleDuelVictory(data);
         };
+        
+        // Add gameFinished callback for FFA results screen access
+        console.log('🔧 [CALLBACK-2] ========== SETTING CALLBACK (OVERRIDE WARNING) ==========');
+        console.log('🔧 [CALLBACK-2] ⚠️  This will OVERRIDE any existing callback!');
+        console.log('🔧 [CALLBACK-2] Setting onGameFinished callback for:', {
+            isHost: this.isHost,
+            socketId: window.multiplayerManager?.socket?.id,
+            timestamp: new Date().toISOString(),
+            existingCallback: typeof window.multiplayerManager?.onGameFinished,
+            multiplayerExists: !!window.multiplayerManager
+        });
+        
+        // Store callback with debugging wrapper
+        const gameFinishedCallback2 = (data) => {
+            console.log('🏁 [CLIENT-2] ========== CALLBACK-2 FIRED ==========');
+            console.log('🏁 [CLIENT-2] Game finished - bringing player to results screen:', data);
+            console.log('🏁 [CLIENT-2] This is host?', this.isHost);
+            console.log('🏁 [CLIENT-2] Socket ID:', window.multiplayerManager?.socket?.id);
+            console.log('🏁 [CLIENT-2] About to call handleGameFinished');
+            
+            try {
+                this.handleGameFinished(data);
+                console.log('🏁 [CLIENT-2] ✅ handleGameFinished completed');
+            } catch (error) {
+                console.error('🏁 [CLIENT-2] ❌ handleGameFinished failed:', error);
+            }
+            
+            console.log('🏁 [CLIENT-2] ========== CALLBACK-2 COMPLETED ==========');
+        };
+        
+        // ⚠️  CRITICAL: This overwrites the previous callback!
+        window.multiplayerManager.onGameFinished = gameFinishedCallback2;
+        
+        // Verify callback was set
+        console.log('✅ [CALLBACK-2] Callback set. Verification:', {
+            callbackExists: typeof window.multiplayerManager.onGameFinished === 'function',
+            callbackMatches: window.multiplayerManager.onGameFinished === gameFinishedCallback2
+        });
+        
+        console.log('🔧 [CALLBACK-2] ⚠️  CALLBACK-1 HAS BEEN OVERRIDDEN BY CALLBACK-2!');
     }
     
     // Basic multiplayer navigation methods
@@ -5078,3 +5723,4 @@ class DemonListGuessr {
 // Enable detailed debug logging with: localStorage.setItem('debug', 'true')
 // Disable with: localStorage.removeItem('debug')
 const game = new DemonListGuessr();
+window.game = game;

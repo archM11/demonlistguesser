@@ -57,14 +57,16 @@ io.on('connection', (socket) => {
                 guesses: {},
                 currentRound: 0,
                 roundScores: {}, // Track scores per round per player
-                totalScores: {}  // Track total scores across all rounds
+                totalScores: {},  // Track total scores across all rounds
+                submittedPlayers: new Set() // Track which players have submitted this round
             },
             duelHealth: {}, // For duel mode - maps player IDs to health values
             duelState: {
                 clashReady: false,
                 roundScores: {},
                 pendingResults: {},
-                hasServerHealth: false
+                hasServerHealth: false,
+                roundMultiplier: 1.0 // Starts at 1x, increases each round
             },
             teams: {
                 red: { name: 'Red Team', color: '#ff4444', members: [] },
@@ -123,6 +125,7 @@ io.on('connection', (socket) => {
                 io.to(member.id).emit('partyUpdated', party);
                 // Also send explicit memberJoined event to force visual update
                 if (member.id !== socket.id) { // Don't send to the joiner themselves
+                    const newMember = party.members.find(m => m.id === socket.id);
                     io.to(member.id).emit('memberJoined', {
                         newMember: newMember,
                         party: party,
@@ -168,8 +171,10 @@ io.on('connection', (socket) => {
 
         console.log(`🎮 Game type changed to: ${data.gameType} in party: ${partyCode}`);
         
-        // Notify all party members
-        party.members.forEach(member => {
+        // Notify all party members about the gameType change
+        console.log(`📡 Broadcasting gameType change (${data.gameType}) to ${party.members.length} members`);
+        party.members.forEach((member, index) => {
+            console.log(`📡 Sending partyUpdated to member ${index + 1}: ${member.name} (${member.id})`);
             io.to(member.id).emit('partyUpdated', party);
         });
     });
@@ -191,6 +196,7 @@ io.on('connection', (socket) => {
         party.gameState.guesses = {};
         party.gameState.roundScores = {};
         party.gameState.totalScores = {};
+        party.gameState.submittedPlayers = new Set(); // Track submitted players to prevent duplicates
         
         // Initialize total scores for all members
         party.members.forEach(member => {
@@ -203,6 +209,7 @@ io.on('connection', (socket) => {
             party.duelState.roundScores = {};
             party.duelState.pendingResults = {};
             party.duelState.hasServerHealth = false;
+            party.duelState.roundMultiplier = 1.0;
             
             // Ensure duel health is initialized for exactly 2 players
             if (party.members.length >= 2) {
@@ -249,9 +256,29 @@ io.on('connection', (socket) => {
             gameType: party.gameType
         });
         
+        // CRITICAL FIX: Check for duplicate submissions to prevent double damage
+        if (!party.gameState.submittedPlayers) {
+            party.gameState.submittedPlayers = new Set();
+        }
+        
+        if (party.gameState.submittedPlayers.has(socket.id)) {
+            console.log(`🚫 [DEDUP] Player ${socket.id} already submitted for current round - ignoring duplicate`);
+            return;
+        }
+        
+        // Mark player as submitted for this round
+        party.gameState.submittedPlayers.add(socket.id);
+        console.log(`✅ [DEDUP] Player ${socket.id} submission accepted for round ${round}`);
+        
         // Store both score and guess
         party.gameState.scores[socket.id] = score;
         party.gameState.guesses[socket.id] = guess;
+        
+        // Track this player as having submitted (initialize if needed)
+        if (!party.gameState.submittedPlayers) {
+            party.gameState.submittedPlayers = new Set();
+        }
+        party.gameState.submittedPlayers.add(socket.id);
         
         // For FFA, update total score if provided
         if (party.gameType === 'ffa' && totalScore !== undefined) {
@@ -282,15 +309,28 @@ io.on('connection', (socket) => {
             });
         });
 
-        // Check if all players have submitted scores
-        const submittedCount = Object.keys(party.gameState.scores).length;
-        const expectedCount = party.gameType === 'duels' ? Math.min(party.members.length, 2) : party.members.length;
+        // Check if all active players have submitted scores
+        const activePlayerIds = party.members.map(m => m.id);
+        const submittedPlayers = party.gameState.submittedPlayers || new Set();
+        const expectedCount = party.gameType === 'duels' ? Math.min(activePlayerIds.length, 2) : activePlayerIds.length;
         
-        if (submittedCount >= expectedCount) {
-            console.log(`🏁 All ${expectedCount} players submitted. Processing round completion...`);
+        console.log(`📊 [SUBMISSION-CHECK] Checking if round complete:`, {
+            submittedPlayers: Array.from(submittedPlayers),
+            activePlayers: activePlayerIds,
+            submittedCount: submittedPlayers.size,
+            expectedCount,
+            gameType: party.gameType
+        });
+        
+        // Check if all active players have submitted
+        const allActiveSubmitted = activePlayerIds.every(id => submittedPlayers.has(id));
+        
+        if (allActiveSubmitted && expectedCount > 0) {
+            console.log(`🏁 All ${expectedCount} active players submitted. Processing round completion...`);
             handleRoundComplete(party);
         } else {
-            console.log(`⏳ Waiting for more submissions: ${submittedCount}/${expectedCount}`);
+            const remainingPlayers = activePlayerIds.filter(id => !submittedPlayers.has(id));
+            console.log(`⏳ Waiting for submissions from: ${remainingPlayers.join(', ')} (${submittedPlayers.size}/${expectedCount} submitted)`);
         }
     });
 
@@ -321,6 +361,7 @@ io.on('connection', (socket) => {
         party.gameState.currentRound++;
         party.gameState.scores = {};
         party.gameState.guesses = {};
+        party.gameState.submittedPlayers = new Set(); // Clear submitted players for new round
         
         console.log('🔄 [SERVER] Round advanced:', previousRound, '->', party.gameState.currentRound);
         
@@ -329,22 +370,158 @@ io.on('connection', (socket) => {
             party.duelState.clashReady = false;
             party.duelState.roundScores = {};
             party.duelState.hasServerHealth = false;
+            
+            // Increase multiplier for next round (but not after the first round)
+            if (party.gameState.currentRound > 1) {
+                party.duelState.roundMultiplier += 0.2;
+                console.log(`🔄 [SERVER] Increased damage multiplier to ${party.duelState.roundMultiplier.toFixed(1)}x for round ${party.gameState.currentRound}`);
+            } else {
+                console.log(`🔄 [SERVER] Round ${party.gameState.currentRound} - multiplier remains at ${party.duelState.roundMultiplier.toFixed(1)}x`);
+            }
+            
             console.log('🔄 [SERVER] Cleared duel state for new round');
         }
         
-        console.log(`🏁 [SERVER] Round ${party.gameState.currentRound} started in party: ${partyCode}`);
-        console.log('🔄 [SERVER] Notifying', party.members.length, 'party members');
+        // CRITICAL FIX: Check if game should end instead of starting new round
+        const totalRounds = party.gameType === 'duels' ? 999 : 5; // Duels continue until someone reaches 0 HP
         
-        // Notify all party members
-        party.members.forEach((member, index) => {
-            console.log(`🔄 [SERVER] Emitting nextRoundStarted to member ${index + 1}:`, member.id);
-            io.to(member.id).emit('nextRoundStarted', {
-                round: party.gameState.currentRound,
-                party
+        if (party.gameType !== 'duels' && party.gameState.currentRound > totalRounds) {
+            console.log(`🏁 [SERVER] Game ended - round ${party.gameState.currentRound} > total rounds ${totalRounds}`);
+            console.log('🔄 [SERVER] Sending gameFinished to all party members');
+            
+            // Send game finished event to all players
+            party.members.forEach((member, index) => {
+                console.log(`🔄 [SERVER] Emitting gameFinished to member ${index + 1}:`, member.id);
+                io.to(member.id).emit('gameFinished', {
+                    party,
+                    finalScores: party.gameState.totalScores,
+                    gameType: party.gameType
+                });
             });
+            
+            console.log('🔄 [SERVER] gameFinished events sent to all members');
+        } else {
+            console.log(`🏁 [SERVER] Round ${party.gameState.currentRound} started in party: ${partyCode}`);
+            console.log('🔄 [SERVER] Notifying', party.members.length, 'party members');
+            
+            // Notify all party members
+            party.members.forEach((member, index) => {
+                console.log(`🔄 [SERVER] Emitting nextRoundStarted to member ${index + 1}:`, member.id);
+                console.log(`🔄 [SERVER] Current health values being sent:`, party.duelHealth);
+                io.to(member.id).emit('nextRoundStarted', {
+                    round: party.gameState.currentRound,
+                    party,
+                    multiplier: party.duelState?.roundMultiplier || 1.0
+                });
+            });
+            
+            console.log('🔄 [SERVER] nextRoundStarted events sent to all members');
+        }
+    });
+
+    // Show Final Results - broadcast to all players when View Results button is clicked
+    socket.on('showFinalResults', (data) => {
+        console.log('🎯 [SERVER] showFinalResults event received from client:', socket.id);
+        console.log('🎯 [SERVER] Data:', data);
+        
+        const partyCode = data.partyCode || userParties.get(socket.id);
+        const party = parties.get(partyCode);
+        
+        console.log('🎯 [SERVER] Party lookup for showFinalResults:', {
+            partyCode,
+            partyExists: !!party,
+            hostId: party?.host,
+            requesterId: socket.id,
+            isHost: party?.host === socket.id
         });
         
-        console.log('🔄 [SERVER] nextRoundStarted events sent to all members');
+        if (!party) {
+            console.log('❌ [SERVER] Party not found for showFinalResults');
+            return;
+        }
+        
+        if (party.host !== socket.id) {
+            console.log('❌ [SERVER] Only host can trigger showFinalResults');
+            return;
+        }
+        
+        console.log('🎯 [SERVER] Broadcasting forceToResults to all players');
+        
+        // Send forceToResults to all party members
+        party.members.forEach((member, index) => {
+            console.log(`🎯 [SERVER] Sending forceToResults to member ${index + 1}:`, member.id);
+            
+            const memberSocket = io.sockets.sockets.get(member.id);
+            const socketStatus = {
+                exists: !!memberSocket,
+                connected: memberSocket?.connected || false,
+                rooms: memberSocket ? [...memberSocket.rooms] : []
+            };
+            console.log(`🎯 [SERVER] Socket status for ${member.id}:`, socketStatus);
+            
+            io.to(member.id).emit('forceToResults', {
+                party: party,
+                finalScores: party.gameState?.totalScores || {},
+                gameType: party.gameType
+            });
+            console.log(`🎯 [SERVER] forceToResults event sent to ${member.id}`);
+        });
+        
+        console.log('🎯 [SERVER] forceToResults events sent to all members');
+    });
+
+    // End FFA Game - dedicated handler to avoid race conditions with nextRound
+    socket.on('endFFAGame', () => {
+        console.log('🏁 [SERVER] endFFAGame event received from client:', socket.id);
+        
+        const partyCode = userParties.get(socket.id);
+        const party = parties.get(partyCode);
+        
+        console.log('🏁 [SERVER] Party lookup for FFA end:', {
+            partyCode,
+            partyExists: !!party,
+            hostId: party?.host,
+            requesterId: socket.id,
+            isHost: party?.host === socket.id,
+            gameType: party?.gameType
+        });
+        
+        if (!party || party.host !== socket.id) {
+            console.error('❌ [SERVER] endFFAGame rejected - not host or no party');
+            socket.emit('error', { message: 'Only host can end FFA game' });
+            return;
+        }
+        
+        if (party.gameType !== 'ffa') {
+            console.error('❌ [SERVER] endFFAGame rejected - not an FFA game');
+            socket.emit('error', { message: 'Can only end FFA games' });
+            return;
+        }
+        
+        console.log('🏁 [SERVER] Ending FFA game - sending gameFinished to all players');
+        
+        // Send game finished event to all players
+        party.members.forEach((member, index) => {
+            console.log(`🏁 [SERVER] Emitting gameFinished to member ${index + 1}:`, member.id);
+            
+            // Check if socket exists and is connected
+            const socket = io.sockets.sockets.get(member.id);
+            console.log(`🏁 [SERVER] Socket status for ${member.id}:`, {
+                exists: !!socket,
+                connected: socket?.connected,
+                rooms: socket?.rooms ? Array.from(socket.rooms) : 'none'
+            });
+            
+            io.to(member.id).emit('gameFinished', {
+                party,
+                finalScores: party.gameState.totalScores,
+                gameType: party.gameType
+            });
+            
+            console.log(`🏁 [SERVER] gameFinished event sent to ${member.id}`);
+        });
+        
+        console.log('🏁 [SERVER] FFA gameFinished events sent to all members');
     });
 
     // Leave party
@@ -384,9 +561,12 @@ function handleRoundComplete(party) {
             console.log(`🏥 Player 1 (${player1Id}): Score=${player1Score}`);
             console.log(`🏥 Player 2 (${player2Id}): Score=${player2Score}`);
             
-            // Calculate damage and determine winner
+            // Calculate damage with multiplier and determine winner
             const scoreDifference = Math.abs(player1Score - player2Score);
-            let damageAmount = scoreDifference;
+            const baseMultiplier = party.duelState.roundMultiplier || 1.0;
+            let damageAmount = Math.floor(scoreDifference * baseMultiplier);
+            
+            console.log(`⚔️ DAMAGE CALCULATION: ${scoreDifference} × ${baseMultiplier.toFixed(1)} = ${damageAmount} damage`);
             
             // Apply damage to the lower scorer
             let winner, loser;
@@ -422,6 +602,8 @@ function handleRoundComplete(party) {
                 player1Score: player1Score,
                 player2Score: player2Score,
                 damage: damageAmount,
+                baseDamage: scoreDifference,
+                multiplier: baseMultiplier,
                 winner: winner,
                 loser: loser,
                 health: { ...party.duelHealth },
@@ -505,6 +687,12 @@ function handlePlayerLeave(socketId) {
     delete party.duelState.roundScores[socketId];
     delete party.duelHealth[socketId];
     
+    // Remove from submitted players set if it exists
+    if (party.gameState.submittedPlayers) {
+        party.gameState.submittedPlayers.delete(socketId);
+        console.log(`🧽 [CLEANUP] Removed ${socketId} from submittedPlayers set`);
+    }
+    
     if (party.members.length === 0) {
         // Delete empty party
         parties.delete(partyCode);
@@ -527,6 +715,37 @@ function handlePlayerLeave(socketId) {
                 remainingMembers: party.members.length
             });
         });
+        
+        // Check if round should complete now that someone left
+        if (party.gameState && party.gameState.inProgress) {
+            // Get IDs of remaining active players
+            const activePlayerIds = party.members.map(m => m.id);
+            const submittedPlayers = party.gameState.submittedPlayers || new Set();
+            const expectedCount = party.gameType === 'duels' ? 
+                Math.min(activePlayerIds.length, 2) : activePlayerIds.length;
+            
+            // Check how many active players have submitted
+            const activeSubmittedCount = activePlayerIds.filter(id => 
+                submittedPlayers.has(id)
+            ).length;
+            
+            console.log(`🔍 [LEAVE-CHECK] After ${memberName} left:`, {
+                activePlayerIds,
+                submittedPlayers: Array.from(submittedPlayers),
+                activeSubmittedCount,
+                expectedCount,
+                shouldComplete: activeSubmittedCount >= expectedCount && expectedCount > 0
+            });
+            
+            // Complete round if all remaining active players have submitted
+            if (activeSubmittedCount >= expectedCount && expectedCount > 0) {
+                console.log(`🏁 [INSTANT-FINISH] All ${expectedCount} remaining active players have submitted. Completing round immediately...`);
+                handleRoundComplete(party);
+            } else if (expectedCount > 0) {
+                const waitingFor = activePlayerIds.filter(id => !submittedPlayers.has(id));
+                console.log(`⏳ [LEAVE-CHECK] Still waiting for submissions from: ${waitingFor.join(', ')}`);
+            }
+        }
     }
 }
 

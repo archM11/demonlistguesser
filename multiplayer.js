@@ -33,6 +33,9 @@ class MultiplayerManager {
         
         if (hostname === 'localhost' || hostname === '127.0.0.1') {
             serverUrl = 'http://localhost:3002';
+        } else if (hostname.includes('ngrok')) {
+            // For ngrok, use the multiplayer tunnel URL
+            serverUrl = 'https://41f5d762fb46.ngrok-free.app';
         } else {
             // Update this with your deployed server URL
             serverUrl = 'https://your-deployed-server.herokuapp.com';
@@ -137,7 +140,23 @@ class MultiplayerManager {
                 console.log('🔄 [MULTIPLAYER] Calling onPartyUpdated callback');
                 this.onPartyUpdated(party);
             } else {
-                console.error('❌ [MULTIPLAYER] onPartyUpdated callback not set!');
+                console.log('⏳ [MULTIPLAYER] onPartyUpdated callback not yet initialized, using persistent retry');
+                // More aggressive retry with multiple attempts
+                let attempts = 0;
+                const maxAttempts = 20; // Try for 2 seconds
+                const retryInterval = setInterval(() => {
+                    attempts++;
+                    if (this.onPartyUpdated) {
+                        console.log(`✅ [MULTIPLAYER] Callback found on attempt ${attempts}, executing queued update`);
+                        this.onPartyUpdated(party);
+                        clearInterval(retryInterval);
+                    } else if (attempts >= maxAttempts) {
+                        console.error(`❌ [MULTIPLAYER] Failed to find callback after ${maxAttempts} attempts`);
+                        clearInterval(retryInterval);
+                    } else {
+                        console.log(`⏳ [MULTIPLAYER] Retry attempt ${attempts}/${maxAttempts}`);
+                    }
+                }, 100);
             }
         });
         
@@ -298,6 +317,13 @@ class MultiplayerManager {
 
         this.socket.on('roundComplete', (data) => {
             console.log('🎯 [MULTIPLAYER] roundComplete event received from server:', data);
+            
+            // Check if user has quit - ignore if they have
+            if (window.game && window.game.userHasQuit) {
+                console.log('🚪 [QUIT] Ignoring roundComplete event because user has quit');
+                return;
+            }
+            
             console.log('🎯 [MULTIPLAYER] onRoundComplete callback available:', !!this.onRoundComplete);
             
             // Update party health if included (for duels)
@@ -319,6 +345,13 @@ class MultiplayerManager {
 
         this.socket.on('nextRoundStarted', (data) => {
             console.log('🔄 [MULTIPLAYER] nextRoundStarted event received from server:', data);
+            
+            // Check if user has quit - ignore if they have
+            if (window.game && window.game.userHasQuit) {
+                console.log('🚪 [QUIT] Ignoring nextRoundStarted event because user has quit');
+                return;
+            }
+            
             console.log('🔄 [MULTIPLAYER] onNextRoundStarted callback available:', !!this.onNextRoundStarted);
             this.currentParty = data.party; // Update party state
             this.syncToLocalStorage();
@@ -342,6 +375,159 @@ class MultiplayerManager {
                 this.onDuelVictory(data);
             } else {
                 console.error('❌ [MULTIPLAYER] onDuelVictory callback not set!');
+            }
+        });
+
+        this.socket.on('gameFinished', (data) => {
+            console.log('🏁 [MULTIPLAYER] ========== GAME FINISHED EVENT RECEIVED ==========');
+            console.log('🏁 [MULTIPLAYER] gameFinished event received from server:', data);
+            
+            // Check if user has quit - ignore if they have
+            if (window.game && window.game.userHasQuit) {
+                console.log('🚪 [QUIT] Ignoring gameFinished event because user has quit');
+                return;
+            }
+            
+            console.log('🏁 [MULTIPLAYER] Socket ID:', this.socket?.id);
+            console.log('🏁 [MULTIPLAYER] Socket connected:', this.socket?.connected);
+            console.log('🏁 [MULTIPLAYER] Is Host:', this.isHost);
+            console.log('🏁 [MULTIPLAYER] Connection state:', this.connected);
+            console.log('🏁 [MULTIPLAYER] onGameFinished callback available:', !!this.onGameFinished);
+            console.log('🏁 [MULTIPLAYER] onGameFinished callback type:', typeof this.onGameFinished);
+            
+            // ROBUST SOLUTION WITH TIMEOUT SAFETY NET
+            let handled = false;
+            const startTime = Date.now();
+            
+            // METHOD 1: Try callback first
+            if (this.onGameFinished) {
+                console.log('🏁 [MULTIPLAYER] ✅ METHOD 1: Calling onGameFinished callback');
+                try {
+                    this.onGameFinished(data);
+                    handled = true;
+                    console.log('🏁 [MULTIPLAYER] ✅ METHOD 1: Callback completed successfully');
+                } catch (error) {
+                    console.error('❌ [MULTIPLAYER] METHOD 1: onGameFinished callback failed:', error);
+                }
+            } else {
+                console.log('🏁 [MULTIPLAYER] ⚠️  METHOD 1: No callback available, skipping to fallback');
+            }
+            
+            // METHOD 2: Direct fallback if callback failed
+            if (!handled) {
+                console.log('🏁 [MULTIPLAYER] 🚨 METHOD 2: DIRECT FALLBACK - calling game.endGame()');
+                
+                if (window.game) {
+                    console.log('🏁 [MULTIPLAYER] 🚨 METHOD 2: Updating final scores');
+                    if (data.finalScores && window.game.currentGame) {
+                        window.game.currentGame.totalScores = data.finalScores;
+                    }
+                    
+                    console.log('🏁 [MULTIPLAYER] 🚨 METHOD 2: Calling window.game.endGame()');
+                    try {
+                        window.game.endGame();
+                        handled = true;
+                        console.log('🏁 [MULTIPLAYER] ✅ METHOD 2: Direct fallback completed successfully');
+                    } catch (error) {
+                        console.error('❌ [MULTIPLAYER] METHOD 2: Direct fallback failed:', error);
+                    }
+                } else {
+                    console.error('❌ [MULTIPLAYER] METHOD 2: window.game not available');
+                }
+            }
+            
+            // METHOD 3: TIMEOUT SAFETY NET (Ultimate fallback after 3 seconds)
+            const timeoutMs = 3000;
+            setTimeout(() => {
+                const currentScreen = document.querySelector('.screen.active')?.id;
+                const elapsed = Date.now() - startTime;
+                
+                console.log(`🏁 [MULTIPLAYER] 🛡️  METHOD 3: TIMEOUT SAFETY NET (${elapsed}ms elapsed)`);
+                console.log(`🏁 [MULTIPLAYER] 🛡️  Current screen: ${currentScreen}, Is host: ${this.isHost}`);
+                
+                // Only trigger safety net for non-hosts who aren't on results screen
+                if (!this.isHost && currentScreen !== 'resultsScreen') {
+                    console.log('🏁 [MULTIPLAYER] 🛡️  METHOD 3: NON-HOST NOT ON RESULTS - FORCING TRANSITION');
+                    
+                    if (window.game) {
+                        // Force update scores and transition to results
+                        if (data.finalScores && window.game.currentGame) {
+                            window.game.currentGame.totalScores = data.finalScores;
+                        }
+                        
+                        try {
+                            window.game.showScreen('resultsScreen');
+                            console.log('🏁 [MULTIPLAYER] ✅ METHOD 3: Safety net forced transition to results');
+                        } catch (error) {
+                            console.error('❌ [MULTIPLAYER] METHOD 3: Safety net failed:', error);
+                        }
+                    }
+                } else {
+                    console.log('🏁 [MULTIPLAYER] 🛡️  METHOD 3: Safety net not needed - player already on results or is host');
+                }
+            }, timeoutMs);
+            
+            if (!handled) {
+                console.error('❌ [MULTIPLAYER] 🚨 CRITICAL: Primary methods failed, relying on timeout safety net');
+            }
+            
+            console.log('🏁 [MULTIPLAYER] ========== END GAME FINISHED EVENT ==========');
+        });
+        
+        this.socket.on('forceToResults', (data) => {
+            console.log('🎯 [MULTIPLAYER] ========== FORCE TO RESULTS EVENT RECEIVED ==========');
+            console.log('🎯 [MULTIPLAYER] forceToResults event received from server:', data);
+            
+            // Check if user has quit - ignore if they have
+            if (window.game && window.game.userHasQuit) {
+                console.log('🚪 [QUIT] Ignoring forceToResults event because user has quit');
+                return;
+            }
+            
+            console.log('🎯 [MULTIPLAYER] Socket ID:', this.socket?.id);
+            console.log('🎯 [MULTIPLAYER] Is Host:', this.isHost);
+            
+            console.log('🎯 [MULTIPLAYER] 🚀 FORCE TO RESULTS - Using endGame()');
+            
+            // Force both host and non-host directly to results screen
+            if (window.game) {
+                try {
+                    // Update final scores if provided
+                    if (data.finalScores && window.game.currentGame) {
+                        console.log('🎯 [MULTIPLAYER] Updating final scores:', data.finalScores);
+                        window.game.currentGame.totalScores = data.finalScores;
+                    }
+                    
+                    // Remove any FFA reveal screens
+                    const ffaRevealScreen = document.getElementById('ffaRevealScreen');
+                    if (ffaRevealScreen) {
+                        console.log('🎯 [MULTIPLAYER] Removing FFA reveal screen');
+                        ffaRevealScreen.remove();
+                    }
+                    
+                    // Call endGame() - the proper way to show multiplayer results
+                    console.log('🎯 [MULTIPLAYER] Calling window.game.endGame()');
+                    window.game.endGame();
+                    console.log('🎯 [MULTIPLAYER] ✅ Force to results completed');
+                    
+                } catch (error) {
+                    console.error('🎯 [MULTIPLAYER] ❌ Force to results failed:', error);
+                }
+            } else {
+                console.error('🎯 [MULTIPLAYER] ❌ window.game not available for force to results');
+            }
+            
+            console.log('🎯 [MULTIPLAYER] ========== FORCE TO RESULTS COMPLETE ==========');
+        });
+
+        // Debug: Listen for any events containing "game" or "finish"
+        const originalEmit = this.socket.emit;
+        const originalOn = this.socket.on;
+        
+        // Log all events received
+        this.socket.onAny((eventName, ...args) => {
+            if (eventName.toLowerCase().includes('game') || eventName.toLowerCase().includes('finish')) {
+                console.log('🔍 [MULTIPLAYER] Event received:', eventName, args);
             }
         });
 
@@ -455,6 +641,30 @@ class MultiplayerManager {
         return true;
     }
 
+    endFFAGame() {
+        console.log('🏁 [MULTIPLAYER] endFFAGame() called');
+        console.log('🏁 [MULTIPLAYER] Connection state:', {
+            connected: this.connected,
+            isHost: this.isHost,
+            socketId: this.socket?.id,
+            currentParty: !!this.currentParty
+        });
+        
+        if (!this.connected || !this.isHost) {
+            console.error('❌ [MULTIPLAYER] Cannot end FFA game - not connected or not host:', {
+                connected: this.connected,
+                isHost: this.isHost
+            });
+            return false;
+        }
+        
+        console.log('✅ [MULTIPLAYER] Ending FFA game');
+        console.log('✅ [MULTIPLAYER] Emitting endFFAGame event to server');
+        this.socket.emit('endFFAGame');
+        console.log('✅ [MULTIPLAYER] endFFAGame event emitted successfully');
+        return true;
+    }
+
     // Leave current party
     leaveParty() {
         if (!this.connected) {
@@ -469,11 +679,37 @@ class MultiplayerManager {
         console.log('[MULTIPLAYER] Leaving party');
         this.socket.emit('leaveParty');
         
+        // Clear party-related callbacks to prevent unwanted reactions to events
+        this.clearPartyCallbacks();
+        
         // Clear local state
         this.currentParty = null;
         this.isHost = false;
         this.clearLocalStorage();
         return true;
+    }
+    
+    // Clear party-related callbacks to prevent unwanted reactions after leaving
+    clearPartyCallbacks() {
+        console.log('🧹 [MULTIPLAYER] Clearing party-related callbacks');
+        
+        // Clear all callback functions so events don't trigger unwanted actions
+        this.onPartyCreated = null;
+        this.onJoinSuccess = null;
+        this.onJoinError = null;
+        this.onPartyUpdated = null;
+        this.onMemberJoined = null;
+        this.onMemberLeft = null;
+        this.onGameStarted = null;
+        this.onPlayerScoreSubmitted = null;
+        this.onRoundComplete = null;
+        this.onNextRoundStarted = null;
+        this.onGameFinished = null;
+        this.onDuelClash = null;
+        this.onDuelVictory = null;
+        this.onError = null;
+        
+        console.log('🧹 [MULTIPLAYER] All party callbacks cleared - events will be ignored');
     }
 
     // Get current party information
