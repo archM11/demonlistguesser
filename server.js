@@ -656,6 +656,20 @@ function handleRoundComplete(party) {
         party.gameState.totalScores[playerId] += scores[playerId];
     });
     
+    // Get current demon data for this round
+    const currentRoundIndex = party.gameState.currentRound - 1;
+    let currentDemon = null;
+    
+    if (party.gameState.gameData && party.gameState.gameData.demons && party.gameState.gameData.demons[currentRoundIndex]) {
+        currentDemon = {
+            demon: party.gameState.gameData.demons[currentRoundIndex],
+            actual: party.gameState.gameData.demons[currentRoundIndex].position
+        };
+        console.log(`📝 [SERVER] Sending demon data for round ${party.gameState.currentRound}:`, currentDemon.demon.name, 'at position', currentDemon.actual);
+    } else {
+        console.log(`⚠️  [SERVER] No demon data found for round ${party.gameState.currentRound}`);
+    }
+    
     // Notify all party members of round completion
     party.members.forEach(member => {
         io.to(member.id).emit('roundComplete', {
@@ -663,7 +677,8 @@ function handleRoundComplete(party) {
             guesses,
             round: party.gameState.currentRound,
             damageResult,
-            totalScores: party.gameState.totalScores
+            totalScores: party.gameState.totalScores,
+            currentDemon: currentDemon  // Add demon data for non-host players
         });
     });
     

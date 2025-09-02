@@ -3621,8 +3621,14 @@ class DemonListGuessr {
     showDetailedDuelResults(player1Score, player2Score, damage) {
         console.log('📊 SHOWING DUEL SUMMARY WITH VIDEO');
         
-        // Get current demon and player info
-        const currentDemon = this.currentGame.rounds[this.currentGame.currentRound - 1];
+        // Get current demon and player info - prioritize clashData from server
+        const currentDemon = this.currentGame.clashData?.currentDemon || this.currentGame.rounds[this.currentGame.currentRound - 1];
+        
+        console.log('📝 [DUEL RESULTS] Using demon data:', {
+            fromClashData: this.currentGame.clashData?.currentDemon,
+            fromRounds: this.currentGame.rounds[this.currentGame.currentRound - 1],
+            final: currentDemon
+        });
         const memberIds = this.currentParty.members.map(m => m.id);
         const currentUserId = this.getCurrentUserId();
         const player1Id = memberIds[0];
@@ -3917,6 +3923,28 @@ class DemonListGuessr {
             return;
         }
         
+        // Update current demon data from server (for non-host players)
+        if (data.currentDemon) {
+            console.log('📝 [DEMON SYNC] Received demon data from server:', data.currentDemon);
+            
+            // Ensure rounds array exists and has the current round
+            const roundIndex = (data.round || this.currentGame.currentRound) - 1;
+            if (!this.currentGame.rounds[roundIndex]) {
+                this.currentGame.rounds[roundIndex] = {};
+            }
+            
+            // Update the current demon data for this round
+            this.currentGame.rounds[roundIndex] = {
+                ...this.currentGame.rounds[roundIndex],
+                ...data.currentDemon
+            };
+            
+            // Also update currentDemon for immediate display
+            this.currentGame.currentDemon = data.currentDemon.demon;
+            
+            console.log('📝 [DEMON SYNC] Updated currentDemon and rounds data');
+        }
+        
         // Handle FFA score updates
         if (this.currentGame.gameType === 'ffa') {
             const scores = data.scores || {};
@@ -4110,6 +4138,12 @@ class DemonListGuessr {
                 this.currentGame.clashData = {};
             }
             this.currentGame.clashData.roundGuesses = { ...guesses };
+            
+            // Also store demon data if received from server
+            if (data.currentDemon) {
+                this.currentGame.clashData.currentDemon = data.currentDemon;
+                console.log('📝 [CLASH DATA] Stored demon data for clash display:', data.currentDemon);
+            }
         }
     }
     

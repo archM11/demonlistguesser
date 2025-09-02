@@ -1,0 +1,9 @@
+version: "2"
+authtoken: 31zpCI6Flhb5AOzXJt7EmMAWkw9_2KxXYccmGEJS56t6yd4vp
+tunnels:
+  game:
+    addr: 3001
+    proto: http
+  multiplayer:
+    addr: 3002
+    proto: http
