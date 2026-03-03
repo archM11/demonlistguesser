@@ -4250,12 +4250,19 @@ class DemonListGuessr {
         if (gameHeader) {
             gameHeader.style.display = 'none';
         }
-        
-        // Ensure video container stays visible
-        const videoContainer = document.querySelector('.video-container');
-        if (videoContainer) {
-            videoContainer.style.display = 'block';
-            videoContainer.style.zIndex = '999'; // Below overlay but visible
+
+        // Ensure the correct media container stays visible (video or thumbnail)
+        if (this.currentGame.difficulty === 'thumbnail') {
+            const thumbnailContainer = document.getElementById('thumbnailContainer');
+            if (thumbnailContainer) {
+                thumbnailContainer.style.zIndex = '999';
+            }
+        } else {
+            const videoContainer = document.querySelector('.video-container');
+            if (videoContainer) {
+                videoContainer.style.display = 'block';
+                videoContainer.style.zIndex = '999';
+            }
         }
         
         // Create and show waiting overlay with transparent background to show video
@@ -4335,12 +4342,19 @@ class DemonListGuessr {
         
         // Don't show result section yet - show custom waiting screen
         document.getElementById('resultSection').style.display = 'none';
-        
-        // Ensure video container stays visible
-        const videoContainer = document.querySelector('.video-container');
-        if (videoContainer) {
-            videoContainer.style.display = 'block';
-            videoContainer.style.zIndex = '999'; // Below overlay but visible
+
+        // Ensure the correct media container stays visible (video or thumbnail)
+        if (this.currentGame.difficulty === 'thumbnail') {
+            const thumbnailContainer = document.getElementById('thumbnailContainer');
+            if (thumbnailContainer) {
+                thumbnailContainer.style.zIndex = '999';
+            }
+        } else {
+            const videoContainer = document.querySelector('.video-container');
+            if (videoContainer) {
+                videoContainer.style.display = 'block';
+                videoContainer.style.zIndex = '999';
+            }
         }
         
         // Create and show waiting overlay with transparent background to show video
