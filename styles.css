@@ -5,24 +5,59 @@
 }
 
 :root {
-    --primary: #6B46C1;
-    --primary-dark: #553C9A;
-    --secondary: #10B981;
-    --background: #0F172A;
-    --surface: #1E293B;
-    --surface-light: #334155;
-    --text: #F1F5F9;
-    --text-dim: #94A3B8;
-    --accent: #F59E0B;
-    --error: #EF4444;
-    --success: #22C55E;
+    --primary: #2D5A87;
+    --primary-dark: #1E3A5F;
+    --secondary: #4A90A4;
+    --background: #0A1A1F;
+    --surface: #1A2F35;
+    --surface-light: #2A4449;
+    --text: #E8F4F8;
+    --text-dim: #B4CDD1;
+    --accent: #87CEEB;
+    --error: #CD5C5C;
+    --success: #5F8A5F;
 }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-    background: var(--background);
+    background: 
+        /* Snow effect overlay */
+        radial-gradient(circle at 20% 10%, rgba(255,255,255,0.1) 1px, transparent 1px),
+        radial-gradient(circle at 80% 20%, rgba(255,255,255,0.08) 1px, transparent 1px),
+        radial-gradient(circle at 40% 30%, rgba(255,255,255,0.06) 2px, transparent 2px),
+        radial-gradient(circle at 70% 50%, rgba(255,255,255,0.1) 1px, transparent 1px),
+        radial-gradient(circle at 30% 70%, rgba(255,255,255,0.08) 1px, transparent 1px),
+        radial-gradient(circle at 90% 80%, rgba(255,255,255,0.06) 2px, transparent 2px),
+        /* Forest silhouettes */
+        linear-gradient(to bottom, 
+            transparent 0%, 
+            transparent 70%, 
+            rgba(15, 40, 50, 0.8) 75%, 
+            rgba(10, 30, 40, 0.9) 85%, 
+            rgba(8, 25, 35, 1) 95%, 
+            var(--background) 100%
+        ),
+        /* Winter sky gradient */
+        linear-gradient(to bottom, 
+            #1A3B47 0%, 
+            #2D5A6B 30%, 
+            #4A7C8A 60%, 
+            #5B8D9A 80%, 
+            var(--background) 100%
+        );
+    background-size: 
+        200px 200px,
+        150px 150px, 
+        300px 300px,
+        180px 180px,
+        220px 220px,
+        250px 250px,
+        100% 100%,
+        100% 100%;
+    background-attachment: fixed;
     color: var(--text);
     min-height: 100vh;
+    animation: snowfall 20s ease-in-out infinite alternate;
 }
 
 #app {
@@ -42,6 +77,16 @@ body {
 @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
+}
+
+@keyframes snowfall {
+    0% { background-position: 0px 0px, 100px 0px, 50px 0px, 150px 0px, 75px 0px, 200px 0px, 0% 0%, 0% 0%; }
+    100% { background-position: 0px 200px, 100px 150px, 50px 300px, 150px 180px, 75px 220px, 200px 250px, 0% 0%, 0% 0%; }
+}
+
+@keyframes gentleFloat {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
 }
 
 /* Party System Styles */
@@ -139,15 +184,76 @@ body {
     align-items: center;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--surface-light);
+    transition: background 0.2s ease;
+}
+
+.member-item:hover {
+    background: rgba(135, 206, 235, 0.1);
 }
 
 .member-item:last-child {
     border-bottom: none;
 }
 
+.member-info {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.member-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 14px;
+    border: 2px solid rgba(135, 206, 235, 0.3);
+}
+
+.member-details {
+    display: flex;
+    flex-direction: column;
+}
+
 .member-name {
     font-weight: 500;
     color: var(--text);
+}
+
+.member-role {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.member-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.kick-btn {
+    background: rgba(244, 67, 54, 0.8);
+    color: white;
+    border: none;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    backdrop-filter: blur(5px);
+    border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.kick-btn:hover {
+    background: rgba(244, 67, 54, 1);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(244, 67, 54, 0.3);
 }
 
 .member-status {
@@ -708,7 +814,7 @@ body {
 .health-fill {
     height: 100%;
     background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
-    transition: width 0.5s ease-in-out;
+    transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
     border-radius: 8px;
 }
 
@@ -1077,6 +1183,11 @@ body {
     max-width: 1200px;
     margin: 0 auto;
     padding: 2rem;
+    backdrop-filter: blur(10px);
+    background: rgba(26, 47, 53, 0.1);
+    border-radius: 20px;
+    border: 1px solid rgba(135, 206, 235, 0.1);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 /* Home Screen */
@@ -1084,10 +1195,20 @@ body {
     font-size: 3.5rem;
     font-weight: 900;
     text-align: center;
-    background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+    background: linear-gradient(135deg, 
+        #87CEEB 0%, 
+        #4A90A4 30%, 
+        #2D5A87 60%, 
+        #B4E7F7 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     margin-bottom: 0.5rem;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+    animation: gentleFloat 4s ease-in-out infinite;
+    text-shadow: 
+        0 0 10px rgba(135, 206, 235, 0.3),
+        0 0 20px rgba(135, 206, 235, 0.2),
+        0 0 30px rgba(135, 206, 235, 0.1);
 }
 
 .game-subtitle {
@@ -1095,6 +1216,8 @@ body {
     color: var(--text-dim);
     margin-bottom: 3rem;
     font-size: 1.1rem;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+    opacity: 0.9;
 }
 
 .menu-grid {
@@ -1105,11 +1228,12 @@ body {
 }
 
 .menu-btn {
-    background: var(--surface);
-    border: 2px solid var(--surface-light);
+    background: rgba(26, 47, 53, 0.6);
+    backdrop-filter: blur(10px);
+    border: 2px solid rgba(135, 206, 235, 0.2);
     color: var(--text);
     padding: 1.5rem;
-    border-radius: 12px;
+    border-radius: 15px;
     font-size: 1.1rem;
     font-weight: 600;
     cursor: pointer;
@@ -1118,17 +1242,29 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 0.5rem;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 
+        0 4px 15px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255,255,255,0.1);
 }
 
 .menu-btn:hover {
-    transform: translateY(-2px);
-    border-color: var(--primary);
-    box-shadow: 0 10px 25px rgba(107, 70, 193, 0.3);
+    transform: translateY(-2px) scale(1.02);
+    border-color: var(--accent);
+    box-shadow: 
+        0 8px 25px rgba(45, 90, 135, 0.4),
+        0 0 20px rgba(135, 206, 235, 0.2),
+        inset 0 1px 0 rgba(255,255,255,0.2);
+    background: rgba(26, 47, 53, 0.8);
 }
 
 .menu-btn.primary {
     background: linear-gradient(135deg, var(--primary), var(--primary-dark));
-    border-color: var(--primary);
+    border-color: var(--accent);
+    box-shadow: 
+        0 4px 15px rgba(45, 90, 135, 0.4),
+        inset 0 1px 0 rgba(255,255,255,0.2);
 }
 
 .menu-icon {
@@ -1158,6 +1294,45 @@ body {
 
 .daily-icon {
     font-size: 2rem;
+}
+
+.list-status-banner {
+    background: linear-gradient(135deg, rgba(45, 90, 135, 0.3), rgba(45, 90, 135, 0.2));
+    padding: 1rem;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1rem;
+    border: 1px solid rgba(45, 90, 135, 0.3);
+}
+
+.list-status-banner.verified {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.1));
+    border-color: rgba(16, 185, 129, 0.4);
+}
+
+.list-status-banner.offline {
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(217, 119, 6, 0.1));
+    border-color: rgba(245, 158, 11, 0.4);
+}
+
+.status-icon {
+    font-size: 1.5rem;
+}
+
+.list-status-banner small {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.25rem;
+}
+
+.list-status-banner p {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 500;
 }
 
 /* Game Setup Screen */
@@ -1220,18 +1395,27 @@ body {
 .start-btn {
     width: 100%;
     padding: 1rem;
-    background: linear-gradient(135deg, var(--secondary), #059669);
-    border: none;
+    background: linear-gradient(135deg, var(--secondary), var(--primary));
+    border: 2px solid rgba(135, 206, 235, 0.3);
     color: white;
     font-size: 1.2rem;
     font-weight: 700;
     border-radius: 12px;
     cursor: pointer;
-    transition: transform 0.3s ease;
+    transition: all 0.3s ease;
+    box-shadow: 
+        0 4px 15px rgba(45, 90, 135, 0.3),
+        inset 0 1px 0 rgba(255,255,255,0.2);
+    animation: gentleFloat 3s ease-in-out infinite;
 }
 
 .start-btn:hover {
-    transform: translateY(-2px);
+    transform: translateY(-2px) scale(1.02);
+    box-shadow: 
+        0 8px 25px rgba(45, 90, 135, 0.4),
+        inset 0 1px 0 rgba(255,255,255,0.3),
+        0 0 20px rgba(135, 206, 235, 0.3);
+    border-color: rgba(135, 206, 235, 0.6);
 }
 
 /* Game Screen */
@@ -1401,10 +1585,15 @@ body {
 }
 
 .hint-section {
-    background: var(--surface);
+    background: rgba(26, 47, 53, 0.6);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(135, 206, 235, 0.2);
     padding: 1rem;
-    border-radius: 8px;
+    border-radius: 12px;
     margin-bottom: 2rem;
+    box-shadow: 
+        0 4px 15px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255,255,255,0.1);
 }
 
 .hints {
@@ -1414,10 +1603,26 @@ body {
 }
 
 .hint-item {
-    background: var(--surface-light);
+    background: rgba(42, 68, 73, 0.8);
+    backdrop-filter: blur(5px);
+    border: 1px solid rgba(135, 206, 235, 0.3);
     padding: 0.5rem 1rem;
-    border-radius: 6px;
+    border-radius: 8px;
     font-size: 0.9rem;
+    color: var(--text);
+    box-shadow: 
+        0 2px 8px rgba(0, 0, 0, 0.2),
+        inset 0 1px 0 rgba(255,255,255,0.1);
+    transition: all 0.3s ease;
+}
+
+.hint-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 
+        0 4px 12px rgba(0, 0, 0, 0.3),
+        0 0 10px rgba(135, 206, 235, 0.2),
+        inset 0 1px 0 rgba(255,255,255,0.2);
+    border-color: rgba(135, 206, 235, 0.5);
 }
 
 .guess-section {

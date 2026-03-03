@@ -191,7 +191,19 @@ RECENT CRITICAL FIXES (August 29, 2025):
    - Auto-fix safety net with correct class selectors
    - Host and non-host players now see all members correctly
 
-RECENT SESSION FIXES (August 29, 2025):
+RECENT SESSION FIXES (September 8-9, 2025):
+✅ Fixed disconnected player handling in multiplayer rounds
+✅ Implemented client-side protection with hasLeftGame flag
+✅ Added force socket disconnect on party leave (Route 2 fix)
+✅ Fixed waiting overlay removal when leaving party
+✅ Added automatic socket reconnection when creating/joining new party
+✅ Fixed onPartyCreated callback error after reconnection
+✅ Cleared hasLeftGame flag on reconnect and re-registered callbacks
+✅ Enhanced server-side filtering to exclude disconnected players from results
+✅ Fixed round timer completion to only notify connected players
+✅ Removed join party notifications per user request
+
+Previous Session Fixes (August 29, 2025):
 ✅ Fixed game to play 5 rounds instead of 4 (changed >= to > in game over conditions)  
 ✅ Fixed winner background from gradient to solid gold (#FFD700)
 ✅ Fixed points text color from green to white for all players
