@@ -699,6 +699,40 @@ class DemonListGuessr {
             gameType: this.currentGame?.gameType
         });
         
+        // Handle teams score synchronization
+        if (this.currentGame?.gameType === 'teams') {
+            if (data.playerId !== currentUserId) {
+                // Track submissions
+                if (!this.currentGame.teamSubmissions) {
+                    this.currentGame.teamSubmissions = new Set();
+                }
+                this.currentGame.teamSubmissions.add(data.playerId);
+
+                // Count total expected players
+                const allTeamPlayers = [
+                    ...(this.currentParty?.teams?.team1?.members || []),
+                    ...(this.currentParty?.teams?.team2?.members || [])
+                ];
+
+                // Update waiting overlay if it exists
+                const waitingOverlay = document.getElementById('duelWaitingOverlay');
+                if (waitingOverlay) {
+                    const countDiv = waitingOverlay.querySelector('.team-submit-count');
+                    if (countDiv) {
+                        // teamSubmissions already includes current user (added in submit flow)
+                        countDiv.textContent = `${this.currentGame.teamSubmissions.size}/${allTeamPlayers.length} players guessed`;
+                    }
+                }
+
+                // Start countdown as soon as any player submits (if current player hasn't)
+                if (!this.currentGame.duelState?.roundScores[currentUserId] && !this.currentGame.duelState?.countdown) {
+                    this.showOpponentSubmittedNotification();
+                    this.startDuelCountdown(currentUserId);
+                }
+            }
+            return;
+        }
+
         // Handle FFA score synchronization
         if (this.currentGame?.gameType === 'ffa' && data.playerId !== currentUserId) {
             console.log('📨 [FFA SYNC] Updating FFA data for opponent:', data.playerId);
@@ -921,7 +955,7 @@ class DemonListGuessr {
         }
         
         // CRITICAL: Sync health data from party to game to prevent HP bar movement
-        if (data.party && data.party.duelHealth && this.currentGame && this.currentGame.gameType === 'duels') {
+        if (data.party && data.party.duelHealth && this.currentGame && (this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams')) {
             
             // CRITICAL FIX: Apply any pending health first before syncing new health
             if (this.currentGame.pendingDuelHealth) {
@@ -968,8 +1002,10 @@ class DemonListGuessr {
             return;
         }
         
-        // For duels, never end based on round count - only end when someone hits 0 HP
-        if (this.currentGame.gameType === 'duels') {
+        // For duels/teams, never end based on round count - only end when someone hits 0 HP
+        if (this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams') {
+            // Clear team submissions for new round
+            if (this.currentGame.teamSubmissions) this.currentGame.teamSubmissions.clear();
             this.startNewRound();
         } else if (this.currentGame.currentRound > this.currentGame.totalRounds) {
             this.endGame();
@@ -980,13 +1016,13 @@ class DemonListGuessr {
 
     connectToMultiplayer() {
         console.log('[DEBUG] Attempting to connect to multiplayer');
-        
+
         // HEURISTIC FIX: Set up connection timeout and recovery
         this.connectionTimeout = setTimeout(() => {
             console.warn('[HEURISTIC] Multiplayer connection timeout - forcing cleanup');
             this.handleConnectionFailure();
         }, 10000); // 10 second timeout
-        
+
         // Ensure multiplayer manager is connected
         if (window.multiplayerManager) {
             console.log('[DEBUG] Multiplayer manager found, setting up connection');
@@ -995,20 +1031,55 @@ class DemonListGuessr {
                 console.log('[DEBUG] Multiplayer connected callback triggered');
                 clearTimeout(this.connectionTimeout);
                 this.setupMultiplayerCallbacks();
+                this.handlePendingPartyAction();
             };
-            
+
             console.log('[DEBUG] Initiating multiplayer connection');
             window.multiplayerManager.connect();
-            
+
             // Also register callbacks immediately in case already connected
             if (window.multiplayerManager.connected) {
                 console.log('[DEBUG] Multiplayer already connected, setting up callbacks');
                 clearTimeout(this.connectionTimeout);
                 this.setupMultiplayerCallbacks();
+                this.handlePendingPartyAction();
             }
         } else {
             console.warn('[DEBUG] Multiplayer manager not found, will retry in 1 second');
             setTimeout(() => this.connectToMultiplayer(), 1000);
+        }
+    }
+
+    /**
+     * After socket connects, check if we need to rejoin or join a party
+     * based on URL params parsed in handleRouteChange().
+     */
+    handlePendingPartyAction() {
+        console.log('[PENDING] handlePendingPartyAction called:', {
+            pendingRejoinCode: this.pendingRejoinCode,
+            pendingJoinCode: this.pendingJoinCode,
+            socketConnected: window.multiplayerManager?.socket?.connected,
+            socketId: window.multiplayerManager?.socket?.id
+        });
+        const username = localStorage.getItem('username') || 'Player';
+
+        if (this.pendingRejoinCode) {
+            const code = this.pendingRejoinCode;
+            this.pendingRejoinCode = null;
+            console.log('[REJOIN] Rejoining party after page refresh:', code);
+            sessionStorage.removeItem('dlg_rejoin_party');
+            window.multiplayerManager.socket.emit('rejoinParty', {
+                partyCode: code,
+                username: username
+            });
+        } else if (this.pendingJoinCode) {
+            const code = this.pendingJoinCode;
+            this.pendingJoinCode = null;
+            console.log('[JOIN] Auto-joining party from invite link:', code);
+            window.multiplayerManager.socket.emit('joinParty', {
+                partyCode: code,
+                username: username
+            });
         }
     }
 
@@ -1116,8 +1187,10 @@ class DemonListGuessr {
             
             if (data.party.gameType === 'duels') {
                 this.updateDuelsVisual();
+            } else if (data.party.gameType === 'teams') {
+                this.updateTeamsVisual();
             }
-            
+
             console.log('🔄 [FORCE REFRESH] Complete visual update finished');
         }
     }
@@ -1184,8 +1257,13 @@ class DemonListGuessr {
         };
         
         window.multiplayerManager.onJoinError = (error) => {
-            console.error('❌ Failed to join party:', error);
-            alert(`Failed to join party: ${error}`);
+            console.error('[JOIN] Failed to join/rejoin party:', error);
+            // Clean URL and sessionStorage so user lands on a clean home screen
+            sessionStorage.removeItem('dlg_rejoin_party');
+            const cleanUrl = window.location.origin + window.location.pathname;
+            window.history.replaceState(null, '', cleanUrl);
+            this.showScreen('homeScreen');
+            alert(`Failed to join party: ${error?.message || error}`);
         };
         
         window.multiplayerManager.onNextRoundStarted = (data) => {
@@ -1354,6 +1432,8 @@ class DemonListGuessr {
             } else if (this.currentParty.gameType === 'duels') {
                 console.log('[HANDLE PARTY CREATED] Updating duels visual...');
                 this.updateDuelsVisual();
+            } else if (this.currentParty.gameType === 'teams') {
+                this.updateTeamsVisual();
             }
         }, 50);
 
@@ -1364,15 +1444,15 @@ class DemonListGuessr {
         } else if (this.currentParty.gameType === 'duels') {
             console.log('[HANDLE PARTY CREATED] Initial duels visual update...');
             this.updateDuelsVisual();
+        } else if (this.currentParty.gameType === 'teams') {
+            this.updateTeamsVisual();
         }
         
         // Initialize teams if not present
         if (!this.currentParty.teams) {
             this.currentParty.teams = {
-                red: { name: 'Red Team', color: '#ff4444', members: [] },
-                blue: { name: 'Blue Team', color: '#4488ff', members: [] },
-                green: { name: 'Green Team', color: '#44ff44', members: [] },
-                yellow: { name: 'Yellow Team', color: '#ffff44', members: [] }
+                team1: { name: 'Team 1', members: [] },
+                team2: { name: 'Team 2', members: [] }
             };
         }
     }
@@ -1449,12 +1529,14 @@ class DemonListGuessr {
             this.updatePartyGameTypeVisuals();
             if (party.gameType === 'duels') {
                 this.updateDuelsVisual();
+            } else if (party.gameType === 'teams') {
+                this.updateTeamsVisual();
             }
         }, 100);
-        
+
         // Direct call to updatePartyDisplay to ensure member list is updated
         this.updatePartyDisplay();
-        
+
         setTimeout(() => {
             if (party.gameType === 'ffa') {
                 console.log('🎨 [CLIENT] Delayed FFA visual update for party join');
@@ -1464,6 +1546,8 @@ class DemonListGuessr {
                 setTimeout(() => this.updateFFAVisual(), 300);
             } else if (party.gameType === 'duels') {
                 this.updateDuelsVisual();
+            } else if (party.gameType === 'teams') {
+                this.updateTeamsVisual();
             }
             
             // Another updatePartyDisplay call after visual updates
@@ -1822,6 +1906,10 @@ class DemonListGuessr {
         this.hasLeftGame = false;
         this.currentGame = null;
 
+        // Clean party code from URL
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.history.replaceState({route: 'hub'}, '', cleanUrl);
+
         // Show in-game notification
         const notification = this.showNotification(data.reason || 'The party has ended.', 'error');
 
@@ -2128,19 +2216,22 @@ class DemonListGuessr {
             this.handleRouteChange();
         });
         
-        // REFRESH FIX: Leave party on page refresh/close
+        // Leave party on page refresh/close — but skip if this is an intentional
+        // lobby refresh (sessionStorage flag set by backToLobby/playAgain)
         window.addEventListener('beforeunload', (e) => {
+            if (sessionStorage.getItem('dlg_rejoin_party')) {
+                console.log('[REFRESH] Intentional lobby refresh — skipping leave');
+                return;
+            }
             if (this.currentParty && window.multiplayerManager?.isConnected()) {
-                console.log('[REFRESH] Page refreshing/closing - leaving party:', this.currentParty.code);
-                
-                // Try to leave party via socket
+                console.log('[REFRESH] Page closing - leaving party:', this.currentParty.code);
+
                 if (window.multiplayerManager?.socket) {
                     window.multiplayerManager.socket.emit('leaveParty');
                 }
-                
-                // Also use sendBeacon for reliability during page unload
+
                 try {
-                    const serverUrl = window.location.hostname === 'localhost' ? 
+                    const serverUrl = window.location.hostname === 'localhost' ?
                         'http://localhost:3002' : window.location.origin;
                     const data = JSON.stringify({
                         socketId: window.multiplayerManager.socket?.id,
@@ -2153,20 +2244,6 @@ class DemonListGuessr {
             }
         });
         
-        // REFRESH FIX: Clear party state on page load if it's stale
-        window.addEventListener('load', () => {
-            // Check if we have a stale party in URL but no active connection
-            const urlParams = new URLSearchParams(window.location.search);
-            const partyCode = urlParams.get('party');
-            
-            if (partyCode && !this.currentParty) {
-                console.log('[REFRESH] Stale party code in URL detected, cleaning up');
-                // Clean the URL
-                const cleanUrl = window.location.origin + window.location.pathname;
-                window.history.replaceState(null, '', cleanUrl);
-            }
-        });
-        
         // Check initial route
         this.handleRouteChange();
     }
@@ -2174,90 +2251,40 @@ class DemonListGuessr {
     handleRouteChange() {
         const urlParams = new URLSearchParams(window.location.search);
         const partyCode = urlParams.get('party');
-        
+        const storedCode = sessionStorage.getItem('dlg_rejoin_party');
+
         if (partyCode) {
-            console.log('[ROUTING] Game route detected with party:', partyCode);
-            this.currentRoute = 'game';
-            // Don't clear URL if we're actively joining/in a party
-            if (!this.currentParty || this.currentParty.code !== partyCode) {
-                console.log('[ROUTING] Clearing party parameter from URL - no active party');
-                const newUrl = window.location.pathname;
-                window.history.replaceState({}, '', newUrl);
-            }
-            
-            console.log('[ROUTING] Party parameter detected but not auto-joining');
-        } else {
-            console.log('[ROUTING] Hub route detected');
-            this.currentRoute = 'hub';
-            
-            // If we're in a game but URL says hub, clean up FIRST
-            if (this.currentParty) {
-                console.log('[ROUTING] Back button detected - leaving party:', this.currentParty.code);
-                // Leave party first, which will clean everything up
-                this.leaveCurrentParty();
+            console.log('[ROUTING] Party code in URL:', partyCode);
+
+            if (storedCode === partyCode) {
+                // Intentional lobby refresh (backToLobby / playAgain)
+                console.log('[ROUTING] Lobby refresh detected — will rejoin party:', partyCode);
+                this.pendingRejoinCode = partyCode;
             } else {
-                // Clean URL even if no party (ensure clean state)
-                const cleanUrl = window.location.origin + window.location.pathname;
-                if (window.location.href !== cleanUrl) {
-                    console.log('[ROUTING] Cleaning URL from:', window.location.href, 'to:', cleanUrl);
-                    window.history.replaceState({route: 'hub'}, '', cleanUrl);
-                }
+                // Invite link from someone else
+                console.log('[ROUTING] Invite link detected — will join party:', partyCode);
+                this.pendingJoinCode = partyCode;
             }
+        } else {
+            console.log('[ROUTING] Home route');
+            this.currentRoute = 'hub';
+            // Clean sessionStorage in case of stale flag
+            sessionStorage.removeItem('dlg_rejoin_party');
         }
     }
     
     leaveCurrentParty() {
-        console.log('🚪 [PARTY] 🚪 leaveCurrentParty() called! 🚪');
-        console.log('[PARTY] Leaving current party:', this.currentParty?.code);
+        console.log('[PARTY] leaveCurrentParty() — leaving party:', this.currentParty?.code);
 
-        // Set flag to prevent showing "you left" notification to yourself
-        this.userIsLeaving = true;
-
-        // Use window.multiplayerManager since that's how it's initialized
+        // Emit leave to server before the page navigates away
         const manager = window.multiplayerManager;
-        console.log('[PARTY] window.multiplayerManager exists?', !!manager);
-        console.log('[PARTY] multiplayerManager connected?', manager?.isConnected());
-        console.log('[PARTY] multiplayerManager socket?', !!manager?.socket);
-        console.log('[PARTY] multiplayerManager socket connected?', manager?.socket?.connected);
-        
-        // Leave party via multiplayer manager first
-        if (manager && manager.socket && manager.socket.connected) {
-            console.log('[PARTY] ✅ Calling multiplayerManager.leaveParty()');
-            const result = manager.leaveParty();
-            console.log('[PARTY] leaveParty result:', result);
-        } else {
-            console.log('[PARTY] ❌ WARNING: Cannot send leave event - connection issue');
-            console.log('[PARTY] Debug info:', {
-                manager: !!manager,
-                socket: !!manager?.socket,
-                connected: manager?.socket?.connected
-            });
+        if (manager?.socket?.connected) {
+            manager.socket.emit('leaveParty');
         }
-        
-        // Clear all game state
-        this.currentGame = null;
-        this.currentParty = null;
-        this.isHost = false;
-        this.hasLeftGame = true;
-        
-        // Clean URL immediately
-        const cleanUrl = window.location.origin + window.location.pathname;
-        console.log('[PARTY] Cleaning URL to:', cleanUrl);
-        window.history.replaceState({route: 'hub'}, '', cleanUrl);
-        this.currentRoute = 'hub';
-        
-        // Show multiplayer options screen (where they came from)
-        this.showScreen('multiplayerOptionsScreen');
-        
-        // Clear party UI elements
-        this.clearPartyUI();
-        
-        // Remove any UI artifacts
-        document.querySelectorAll('.waiting-overlay, .modal, .popup, .overlay, [class*="overlay"], [id*="overlay"]').forEach(el => el.remove());
-        const nonHostMessage = document.getElementById('nonHostMessage');
-        if (nonHostMessage) {
-            nonHostMessage.remove();
-        }
+
+        // No sessionStorage marker — beforeunload will also fire leaveParty as backup
+        // Full page refresh handles all JS state cleanup
+        window.location.href = '/';
     }
 
     navigateToHub() {
@@ -2271,7 +2298,13 @@ class DemonListGuessr {
     navigateToGame(partyCode) {
         console.log('[ROUTING] Navigating to game:', partyCode);
         const gameUrl = `${window.location.origin}${window.location.pathname}?party=${partyCode}`;
-        window.history.pushState({route: 'game', party: partyCode}, '', gameUrl);
+        // Use replaceState if URL already matches (e.g. after a lobby refresh)
+        const currentUrl = window.location.href;
+        if (currentUrl === gameUrl) {
+            window.history.replaceState({route: 'game', party: partyCode}, '', gameUrl);
+        } else {
+            window.history.pushState({route: 'game', party: partyCode}, '', gameUrl);
+        }
         this.currentRoute = 'game';
     }
     
@@ -2405,131 +2438,53 @@ class DemonListGuessr {
         this.updatePartyVisual();
     }
 
-    // Drag and Drop for Team Management
-    dragStart(event) {
-        event.dataTransfer.setData('text/plain', event.target.dataset.memberId);
-    }
+    // Join a team in team mode
+    movePlayerToTeam(playerId, teamId) {
+        if (!this.isHost) return;
+        if (!this.currentParty) return;
 
-    allowDrop(event) {
-        event.preventDefault();
-    }
-
-    dropMember(event) {
-        event.preventDefault();
-        const memberId = event.dataTransfer.getData('text/plain');
-        const targetTeam = event.currentTarget.closest('.team');
-        const teamId = parseInt(targetTeam.dataset.teamId);
-        
-        this.movePlayerToTeam(memberId, teamId);
-    }
-
-    movePlayerToTeam(memberId, teamId) {
-        const member = this.currentParty.members.find(m => m.id === memberId);
-        if (!member) return;
-
-        // Remove from old team
-        const oldTeamId = member.teamId;
-        if (this.currentParty.teams[oldTeamId]) {
-            this.currentParty.teams[oldTeamId].members = this.currentParty.teams[oldTeamId].members.filter(id => id !== memberId);
+        // Optimistic local update
+        for (const tid of ['team1', 'team2']) {
+            if (this.currentParty.teams[tid]) {
+                this.currentParty.teams[tid].members = this.currentParty.teams[tid].members.filter(id => id !== playerId);
+            }
+        }
+        if (this.currentParty.teams[teamId]) {
+            this.currentParty.teams[teamId].members.push(playerId);
         }
 
-        // Add to new team
-        member.teamId = teamId;
-        if (!this.currentParty.teams[teamId]) {
-            this.currentParty.teams[teamId] = { name: `Team ${teamId}`, members: [] };
-        }
-        this.currentParty.teams[teamId].members.push(memberId);
-
-        this.updateTeamDisplay();
-    }
-
-    addTeam() {
-        const teamIds = Object.keys(this.currentParty.teams).map(Number);
-        const newTeamId = Math.max(...teamIds) + 1;
-        
-        this.currentParty.teams[newTeamId] = { name: `Team ${newTeamId}`, members: [] };
-        this.createTeamElement(newTeamId);
-    }
-
-    createTeamElement(teamId) {
-        const teamsContainer = document.querySelector('.teams-container');
-        const teamDiv = document.createElement('div');
-        teamDiv.className = 'team';
-        teamDiv.dataset.teamId = teamId;
-        teamDiv.innerHTML = `
-            <div class="team-header">
-                <h5>Team ${teamId}</h5>
-                <span class="team-count">(0)</span>
-                <button onclick="window.game.removeTeam(${teamId})" class="remove-team-btn">×</button>
-            </div>
-            <div class="team-members" ondrop="game.dropMember(event)" ondragover="game.allowDrop(event)">
-            </div>
-        `;
-        teamsContainer.appendChild(teamDiv);
-    }
-
-    removeTeam(teamId) {
-        if (Object.keys(this.currentParty.teams).length <= 2) {
-            alert('Must have at least 2 teams!');
-            return;
+        // Emit to server
+        if (window.multiplayerManager?.socket) {
+            window.multiplayerManager.socket.emit('movePlayerToTeam', { playerId, teamId });
         }
 
-        // Move members to team 1
-        const members = this.currentParty.teams[teamId].members;
-        members.forEach(memberId => this.movePlayerToTeam(memberId, 1));
-
-        delete this.currentParty.teams[teamId];
-        document.querySelector(`[data-team-id="${teamId}"]`).remove();
-        this.updateTeamDisplay();
+        this.updateTeamsVisual();
     }
 
-    autoBalance() {
-        const memberIds = this.currentParty.members.map(m => m.id);
-        const teamIds = Object.keys(this.currentParty.teams).map(Number);
-        const membersPerTeam = Math.ceil(memberIds.length / teamIds.length);
+    joinTeam(teamId) {
+        if (!this.currentParty) return;
 
-        // Clear all teams
-        teamIds.forEach(teamId => {
-            this.currentParty.teams[teamId].members = [];
-        });
+        const currentSocketId = window.multiplayerManager?.getSocketId();
+        if (!currentSocketId) return;
 
-        // Distribute members evenly
-        memberIds.forEach((memberId, index) => {
-            const teamIndex = index % teamIds.length;
-            const teamId = teamIds[teamIndex];
-            this.movePlayerToTeam(memberId, teamId);
-        });
-    }
+        // Optimistic local update
+        for (const tid of ['team1', 'team2']) {
+            if (this.currentParty.teams[tid]) {
+                this.currentParty.teams[tid].members = this.currentParty.teams[tid].members.filter(id => id !== currentSocketId);
+            }
+        }
+        if (this.currentParty.teams[teamId]) {
+            this.currentParty.teams[teamId].members.push(currentSocketId);
+        }
+        this.currentGame = this.currentGame || {};
+        this.currentGame.myTeam = teamId;
 
-    updateTeamDisplay() {
-        Object.keys(this.currentParty.teams).forEach(teamId => {
-            const teamElement = document.querySelector(`[data-team-id="${teamId}"]`);
-            if (!teamElement) return;
+        // Emit to server
+        if (window.multiplayerManager?.socket) {
+            window.multiplayerManager.socket.emit('joinTeam', { teamId });
+        }
 
-            const membersContainer = teamElement.querySelector('.team-members');
-            const countElement = teamElement.querySelector('.team-count');
-            const members = this.currentParty.teams[teamId].members;
-
-            membersContainer.innerHTML = '';
-            countElement.textContent = `(${members.length})`;
-
-            members.forEach(memberId => {
-                const member = this.currentParty.members.find(m => m.id === memberId);
-                if (!member) return;
-
-                const memberDiv = document.createElement('div');
-                memberDiv.className = 'member-item';
-                memberDiv.draggable = true;
-                memberDiv.dataset.memberId = memberId;
-                memberDiv.ondragstart = this.dragStart;
-                memberDiv.innerHTML = `
-                    <span class="member-name">${member.name}</span>
-                    <span class="member-status">${member.ready ? 'Ready' : 'Not Ready'}</span>
-                `;
-                membersContainer.appendChild(memberDiv);
-            });
-        });
-        this.updatePartyVisual();
+        this.updateTeamsVisual();
     }
 
     updatePartyVisual() {
@@ -2716,64 +2671,85 @@ class DemonListGuessr {
 
     updateTeamsVisual() {
         const teamsDisplay = document.querySelector('.teams-display');
-        if (!teamsDisplay) return;
-        
+        if (!teamsDisplay || !this.currentParty?.teams) return;
+
         const customAvatar = localStorage.getItem('customAvatar');
         const currentUsername = localStorage.getItem('username') || 'You';
         const currentSocketId = window.multiplayerManager?.getSocketId();
-        
-        // Clear existing teams
+
         teamsDisplay.innerHTML = '';
-        
-        // Create team displays
-        const teamIds = Object.keys(this.currentParty.teams);
-        const maxTeamsToShow = Math.min(teamIds.length, 4); // Show max 4 teams visually
-        
-        for (let i = 0; i < maxTeamsToShow; i++) {
+
+        const teamIds = ['team1', 'team2'];
+
+        for (let i = 0; i < teamIds.length; i++) {
             const teamId = teamIds[i];
             const team = this.currentParty.teams[teamId];
-            
+            if (!team) continue;
+
+            const isMember = team.members.includes(currentSocketId);
+
             const teamDiv = document.createElement('div');
             teamDiv.className = 'team-side';
+            if (isMember) teamDiv.style.border = '2px solid var(--accent)';
             teamDiv.dataset.team = teamId;
-            
+
             const avatarsContainer = document.createElement('div');
             avatarsContainer.className = 'team-avatars';
-            
-            // Add team members
+
             team.members.forEach(memberId => {
                 const member = this.currentParty.members.find(m => m.id === memberId);
-                if (member) {
-                    const playerDiv = document.createElement('div');
-                    playerDiv.className = 'player-avatar';
-                    
-                    let avatarContent;
-                    const isCurrentUser = member.id === currentSocketId;
-                    
-                    if (isCurrentUser && customAvatar) {
-                        avatarContent = `<img src="${customAvatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">`;
-                    } else {
-                        const letter = (isCurrentUser ? currentUsername : member.name).charAt(0).toUpperCase() || 'P';
-                        avatarContent = letter;
-                    }
-                    
-                    const displayName = isCurrentUser ? currentUsername : member.name;
-                    const isHost = member.id === this.currentParty.host;
-                    
-                    playerDiv.innerHTML = `
-                        <div class="avatar">${avatarContent}</div>
-                        <span class="player-name">${displayName}${isHost ? ' 👑' : ''}</span>
-                    `;
-                    avatarsContainer.appendChild(playerDiv);
+
+                const playerDiv = document.createElement('div');
+                playerDiv.className = 'player-avatar';
+
+                const isCurrentUser = memberId === currentSocketId;
+                let avatarContent;
+                if (isCurrentUser && customAvatar) {
+                    avatarContent = `<img src="${customAvatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">`;
+                } else {
+                    const name = isCurrentUser ? currentUsername : (member?.name || 'Player');
+                    avatarContent = name.charAt(0).toUpperCase() || 'P';
                 }
+
+                const displayName = isCurrentUser ? currentUsername : (member?.name || 'Player');
+                const isHost = memberId === this.currentParty.host;
+
+                playerDiv.innerHTML = `
+                    <div class="avatar">${avatarContent}</div>
+                    <span class="player-name">${displayName}${isHost ? ' 👑' : ''}</span>
+                `;
+
+                // Host can swap non-host players to the other team
+                if (this.isHost && memberId !== currentSocketId) {
+                    const oppositeTeamId = teamId === 'team1' ? 'team2' : 'team1';
+                    const swapBtn = document.createElement('button');
+                    swapBtn.className = 'team-swap-btn';
+                    swapBtn.textContent = '⇄';
+                    swapBtn.title = `Move to ${this.currentParty.teams[oppositeTeamId]?.name || 'other team'}`;
+                    swapBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        this.movePlayerToTeam(memberId, oppositeTeamId);
+                    };
+                    playerDiv.appendChild(swapBtn);
+                }
+
+                avatarsContainer.appendChild(playerDiv);
             });
-            
-            teamDiv.innerHTML = `<h4>${team.name}</h4>`;
+
+            // Join button
+            const joinBtn = document.createElement('button');
+            joinBtn.className = 'team-join-btn' + (isMember ? ' joined' : '');
+            joinBtn.textContent = isMember ? 'Joined' : 'Join';
+            if (!isMember) {
+                joinBtn.onclick = () => this.joinTeam(teamId);
+            }
+
+            teamDiv.innerHTML = `<h4>${team.name} (${team.members.length})</h4>`;
             teamDiv.appendChild(avatarsContainer);
+            teamDiv.appendChild(joinBtn);
             teamsDisplay.appendChild(teamDiv);
-            
-            // Add VS divider between teams (except after last team)
-            if (i < maxTeamsToShow - 1) {
+
+            if (i < teamIds.length - 1) {
                 const vsDiv = document.createElement('div');
                 vsDiv.className = 'vs-divider';
                 vsDiv.textContent = 'VS';
@@ -2865,9 +2841,10 @@ class DemonListGuessr {
 
         // Validate team setup for team games
         if (this.currentParty.gameType === 'teams') {
-            const teamsWithMembers = Object.values(this.currentParty.teams).filter(team => team.members.length > 0);
-            if (teamsWithMembers.length < 2) {
-                alert('Need at least 2 teams with members!');
+            const t1 = this.currentParty.teams?.team1?.members?.length || 0;
+            const t2 = this.currentParty.teams?.team2?.members?.length || 0;
+            if (t1 < 1 || t2 < 1) {
+                alert('Each team needs at least 1 player!');
                 return;
             }
         }
@@ -2907,11 +2884,19 @@ class DemonListGuessr {
         if (this.currentParty.gameType === 'ffa') {
             const timerRadio = document.querySelector('input[name="ffaTimer"]:checked');
             ffaTimer = timerRadio ? parseInt(timerRadio.value) : 60;
-            console.log('🕐 [FFA] Timer setting:', { 
-                radioElement: !!timerRadio, 
-                radioValue: timerRadio?.value, 
-                finalTimer: ffaTimer 
+            console.log('🕐 [FFA] Timer setting:', {
+                radioElement: !!timerRadio,
+                radioValue: timerRadio?.value,
+                finalTimer: ffaTimer
             });
+        }
+
+        // Get duel HP setting if duels or teams mode
+        let duelHp = 100; // Default 100 HP
+        if (this.currentParty.gameType === 'duels' || this.currentParty.gameType === 'teams') {
+            const hpInput = document.getElementById('duelHpInput');
+            duelHp = hpInput ? parseInt(hpInput.value) || 100 : 100;
+            duelHp = Math.max(1, Math.min(10000, duelHp));
         }
 
         // Update party settings
@@ -2942,10 +2927,11 @@ class DemonListGuessr {
             gameType: this.currentParty.gameType,
             teams: this.currentParty.teams,
             seed: gameSeed,
-            totalRounds: (this.currentParty && this.currentParty.gameType === 'ffa') ? 5 : 
-                        (this.currentParty && this.currentParty.gameType === 'duels') ? 999 : 
+            totalRounds: (this.currentParty && this.currentParty.gameType === 'ffa') ? 5 :
+                        (this.currentParty && (this.currentParty.gameType === 'duels' || this.currentParty.gameType === 'teams')) ? 999 :
                         (gameMode === 'classic' ? 5 : 10),
-            ffaTimer: ffaTimer
+            ffaTimer: ffaTimer,
+            duelHp: duelHp
         };
 
         // Simple approach: let the server use placeholder data, client handles demon display
@@ -3022,25 +3008,35 @@ class DemonListGuessr {
                 return scores;
             })() : null,
             ffaTimer: gameData.ffaTimer ?? 60, // Store FFA timer setting (use ?? to allow 0)
+            duelHpMax: gameData.duelHp || 100, // Store max HP for display
             // Enhanced duel system with countdown
             duelHealth: gameData.gameType === 'duels' ? (() => {
+                const hp = gameData.duelHp || 100;
                 const health = {
-                    [party.members[0].id]: 100, // Player 1: 100 HP
-                    [party.members[1].id]: 100  // Player 2: 100 HP  
+                    [party.members[0].id]: hp,
+                    [party.members[1].id]: hp
                 };
-                console.log('🏥🏥🏥 INITIALIZING DUEL HEALTH:');
-                console.log('  Player 1 ID:', party.members[0].id, '-> 100 HP');
-                console.log('  Player 2 ID:', party.members[1].id, '-> 100 HP');
-                console.log('  Initial Health Object:', JSON.stringify(health));
+                console.log('🏥 INITIALIZING DUEL HEALTH:', JSON.stringify(health));
+                return health;
+            })() : gameData.gameType === 'teams' ? (() => {
+                const hp = gameData.duelHp || 100;
+                const health = { 'team1': hp, 'team2': hp };
+                console.log('🏥 INITIALIZING TEAM DUEL HEALTH:', JSON.stringify(health));
                 return health;
             })() : null,
-            duelState: gameData.gameType === 'duels' ? {
-                roundScores: {}, // Stores submitted scores for current round
-                countdown: null, // Countdown timeout timer
-                countdownInterval: null, // Countdown display interval
-                clashReady: false, // Whether clash can happen
-                roundMultiplier: 1.0 // Starts at 1x, increases each round
+            duelState: (gameData.gameType === 'duels' || gameData.gameType === 'teams') ? {
+                roundScores: {},
+                countdown: null,
+                countdownInterval: null,
+                clashReady: false,
+                roundMultiplier: 1.0
             } : null,
+            myTeam: gameData.gameType === 'teams' ? (() => {
+                const sid = window.multiplayerManager?.getSocketId();
+                if (party.teams?.team1?.members?.includes(sid)) return 'team1';
+                if (party.teams?.team2?.members?.includes(sid)) return 'team2';
+                return null;
+            })() : null,
             duelWinner: null // Track duel winner - NEVER RESET!
         };
 
@@ -3118,18 +3114,20 @@ class DemonListGuessr {
             console.log('🔄 [CLIENT] Keeping host status:', this.isHost);
         }
         
-        // Only transition to party screen if game is NOT in progress
-        // This prevents forcing users back to lobby when rejoining after refresh
+        // Only transition to party screen if we're on a multiplayer navigation screen
+        // (e.g. join screen, multiplayer options) — NOT from results/game screens.
+        // Players on results screens go to lobby via their own "Back to Lobby" click.
         const gameInProgress = party.gameState?.inProgress;
-        if (party.members.some(m => m.id === myId) && currentScreen !== 'partySetupScreen' && !gameInProgress) {
+        const isOnMultiplayerNav = currentScreen === 'joinPartyScreen' || currentScreen === 'multiplayerOptionsScreen';
+        const isOnResultsOrGame = currentScreen === 'resultsScreen' || currentScreen === 'gameScreen';
+        if (party.members.some(m => m.id === myId) && currentScreen !== 'partySetupScreen' && !gameInProgress && !isOnResultsOrGame) {
             console.log('[CLIENT] Party update with user as member - transitioning to lobby');
             console.log('[CLIENT] Current screen:', currentScreen, '-> partySetupScreen');
-            console.log('[CLIENT] Party code:', party.code, 'Members:', party.members.length);
             this.showScreen('partySetupScreen');
             document.getElementById('partyCode').textContent = party.code;
             this.applyHostRestrictions();
-        } else if (gameInProgress) {
-            console.log('[CLIENT] Game in progress - staying on current screen');
+        } else if (gameInProgress || isOnResultsOrGame) {
+            console.log('[CLIENT] Staying on current screen:', currentScreen);
         }
         
         console.log('🔄 [CLIENT] Party data updated:', {
@@ -3276,6 +3274,12 @@ class DemonListGuessr {
             const shouldShowTimer = gameType === 'ffa' && this.isHost;
             ffaTimerSection.style.display = shouldShowTimer ? 'block' : 'none';
         }
+
+        // Show/hide Duel HP settings (only for host when in duels or teams mode)
+        const duelHpSection = document.getElementById('duelHpSection');
+        if (duelHpSection) {
+            duelHpSection.style.display = ((gameType === 'duels' || gameType === 'teams') && this.isHost) ? 'block' : 'none';
+        }
         
         // Game Mode section was removed from HTML, so no need to hide/show it
         
@@ -3401,7 +3405,7 @@ class DemonListGuessr {
             lists: { mainList, extendedList, legacyList },
             rounds: [],
             currentRound: 0,
-            totalRounds: (this.currentParty && this.currentParty.gameType === 'duels') ? 999 : (gameMode === 'classic' ? 5 : 10),
+            totalRounds: (this.currentParty && (this.currentParty.gameType === 'duels' || this.currentParty.gameType === 'teams')) ? 999 : (gameMode === 'classic' ? 5 : 10),
             score: 0,
             startTime: Date.now(),
             seed: randomSeed
@@ -3506,8 +3510,8 @@ class DemonListGuessr {
         document.getElementById('currentRound').textContent = this.currentGame.currentRound;
         document.getElementById('currentScore').textContent = this.currentGame.score;
         
-        // Update multiplier display for duels only
-        if (this.currentGame.gameType === 'duels' && this.currentGame.duelState) {
+        // Update multiplier display for duels/teams
+        if ((this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams') && this.currentGame.duelState) {
             const roundCounter = document.querySelector('.round-counter');
             if (roundCounter) {
                 const multiplier = this.currentGame.duelState.roundMultiplier || 1.0;
@@ -3528,8 +3532,8 @@ class DemonListGuessr {
             }
         }
         
-        // Show duel health display for duels and reset state
-        if (this.currentGame.gameType === 'duels') {
+        // Show duel health display for duels/teams and reset state
+        if (this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams') {
             // Only update duel display on first round to avoid HP bar movement on subsequent rounds
             if (this.currentGame.currentRound === 1) {
                 this.updateDuelDisplay();
@@ -3547,7 +3551,7 @@ class DemonListGuessr {
         }
         
         // Reset duel state for new round - but NEVER reset duelWinner!
-        if (this.currentGame.gameType === 'duels' && this.currentGame.duelState && !this.currentGame.duelWinner) {
+        if ((this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams') && this.currentGame.duelState && !this.currentGame.duelWinner) {
                 this.currentGame.duelState.roundScores = {};
                 this.currentGame.duelState.roundGuesses = {};
                 this.currentGame.duelState.clashReady = false;
@@ -3911,25 +3915,45 @@ class DemonListGuessr {
             console.log('[FFA] Submitted count:', submittedCount, '/ Expected:', this.currentParty.members.length);
             this.showFFAWaitingState();
             
+        } else if (this.currentGame.gameType === 'teams') {
+            // Teams: submit score to server, show waiting overlay
+            this.currentGame.duelState.roundScores[this.getCurrentUserId()] = points;
+            if (!this.currentGame.duelState.roundGuesses) this.currentGame.duelState.roundGuesses = {};
+            this.currentGame.duelState.roundGuesses[this.getCurrentUserId()] = guess;
+
+            this.currentGame.pendingResults = { guess, actual, points };
+
+            if (window.multiplayerManager && !this.currentGame?.isFinished) {
+                window.multiplayerManager.submitScore({ score: points, guess: guess });
+            }
+
+            // Mark self as submitted
+            if (!this.currentGame.teamSubmissions) this.currentGame.teamSubmissions = new Set();
+            this.currentGame.teamSubmissions.add(this.getCurrentUserId());
+
+            // Show team waiting state with countdown
+            this.showTeamWaitingState();
+            this.startTeamWaitingCountdown();
+
         } else if (this.currentGame.gameType === 'duels') {
-            
+
             // Submit both score and guess
             this.submitDuelScore({ score: points, guess: guess });
-            
+
             // Store our guess and score for later reveal
             this.currentGame.pendingResults = {
                 guess: guess,
                 actual: actual,
                 points: points
             };
-            
+
             // Only show waiting state if opponent hasn't submitted yet
             const currentUserId = this.getCurrentUserId();
             const memberIds = this.currentParty.members.map(m => m.id);
             const otherPlayerId = memberIds.find(id => id !== currentUserId);
             const opponentScore = this.currentGame.duelState.roundScores[otherPlayerId];
-            
-            
+
+
             // Check if clash is already ready (both players submitted)
             if (this.currentGame.duelState.clashReady) {
                 // Both already submitted - clash will happen immediately
@@ -4396,6 +4420,71 @@ class DemonListGuessr {
         document.body.appendChild(waitingOverlay);
     }
 
+    showTeamWaitingState() {
+        if (this.currentGame?.isFinished) return;
+
+        document.getElementById('guessSection').style.display = 'none';
+        document.getElementById('resultSection').style.display = 'none';
+
+        // Keep video/thumbnail visible
+        if (this.currentGame.difficulty === 'thumbnail') {
+            const tc = document.getElementById('thumbnailContainer');
+            if (tc) tc.style.zIndex = '999';
+        } else {
+            const vc = document.querySelector('.video-container');
+            if (vc) { vc.style.display = 'block'; vc.style.zIndex = '999'; }
+        }
+
+        const allTeamPlayers = [
+            ...(this.currentParty?.teams?.team1?.members || []),
+            ...(this.currentParty?.teams?.team2?.members || [])
+        ];
+        const submittedCount = (this.currentGame.teamSubmissions?.size || 0);
+
+        const waitingOverlay = document.createElement('div');
+        waitingOverlay.id = 'duelWaitingOverlay';
+        waitingOverlay.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.1) 0%, rgba(0,0,0,0.9) 80%, rgba(0,0,0,0.95) 100%);
+            display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+            z-index: 1000; color: white; text-align: center; pointer-events: none; padding-bottom: 80px;
+        `;
+
+        waitingOverlay.innerHTML = `
+            <div style="font-size: 32px; font-weight: bold; margin-bottom: 20px;">⚔️ GUESS SUBMITTED</div>
+            <div style="font-size: 24px; margin-bottom: 30px;">Waiting for all players to submit...</div>
+            <div class="team-submit-count" style="font-size: 20px; color: #aaa;">${submittedCount}/${allTeamPlayers.length} players guessed</div>
+            <div id="duelCountdownDisplay" style="font-size: 48px; font-weight: bold; color: #ffd93d;">--</div>
+        `;
+
+        document.body.appendChild(waitingOverlay);
+    }
+
+    startTeamWaitingCountdown() {
+        // Visual countdown on the waiting overlay for the player who already submitted.
+        // If the duel countdown is already running (started by handlePlayerScoreSubmitted),
+        // don't start a duplicate — the existing updateCountdownDisplay handles both.
+        if (this.currentGame.duelState?.countdown) return;
+
+        let remaining = 15;
+        this.updateCountdownDisplay(remaining);
+
+        this.currentGame.duelState.countdownInterval = setInterval(() => {
+            remaining--;
+            this.updateCountdownDisplay(remaining);
+            if (remaining <= 0) {
+                clearInterval(this.currentGame.duelState.countdownInterval);
+                this.currentGame.duelState.countdownInterval = null;
+            }
+        }, 1000);
+
+        // No auto-submit timeout needed — this player already submitted.
+        // Store a dummy value so the guard check (!countdown) prevents duplicates.
+        this.currentGame.duelState.countdown = setTimeout(() => {
+            this.currentGame.duelState.countdown = null;
+        }, 15000);
+    }
+
     submitDuelScore(playerData) {
         if (!this.currentGame.duelState) return;
         
@@ -4466,42 +4555,32 @@ class DemonListGuessr {
             clearInterval(this.currentGame.duelState.countdownInterval);
             this.currentGame.duelState.countdownInterval = null;
         }
-        
-        // Initialize countdown display
+
+        // Countdown display
         let remainingSeconds = 15;
         this.updateCountdownDisplay(remainingSeconds);
-        
-        // Set up interval timer for countdown display
+
         this.currentGame.duelState.countdownInterval = setInterval(() => {
             remainingSeconds--;
             this.updateCountdownDisplay(remainingSeconds);
-            
             if (remainingSeconds <= 0) {
                 clearInterval(this.currentGame.duelState.countdownInterval);
                 this.currentGame.duelState.countdownInterval = null;
             }
         }, 1000);
-        
-        // Set timeout for when countdown expires
-        this.currentGame.duelState.countdown = setTimeout(() => {
-            // Give the non-submitting player a 0 score
-            this.currentGame.duelState.roundScores[waitingForPlayerId] = 0;
 
-            // CRITICAL: If we are the non-submitting player, auto-submit to the server
-            // Without this, the server never receives our score and damage is never applied
+        // When countdown expires, auto-submit 0 to the SERVER if this client
+        // is the one who hasn't guessed yet.  The server's roundComplete event
+        // is the single source of truth — no client-side triggerDuelClash here.
+        this.currentGame.duelState.countdown = setTimeout(() => {
             const currentUserId = this.getCurrentUserId();
             if (waitingForPlayerId === currentUserId) {
-                console.log('[COUNTDOWN] Auto-submitting score 0 to server (player did not guess in time)');
-                if (!this.currentGame.duelState.roundGuesses) {
-                    this.currentGame.duelState.roundGuesses = {};
-                }
-                this.currentGame.duelState.roundGuesses[currentUserId] = 999;
+                console.log('[COUNTDOWN] Auto-submitting score 0 to server (did not guess in time)');
                 if (window.multiplayerManager && !this.currentGame?.isFinished) {
                     window.multiplayerManager.submitScore({ score: 0, guess: 999 });
                 }
             }
-
-            this.triggerDuelClash();
+            // Do NOT call triggerDuelClash — wait for the server's roundComplete
         }, 15000);
     }
     
@@ -4649,6 +4728,210 @@ class DemonListGuessr {
         
         // DEFENSIVE: Clear the clash in progress flag
         this.currentGame.duelState.clashInProgress = false;
+    }
+
+    triggerTeamDuelClash() {
+        if (this.currentGame.duelState?.clashInProgress) return;
+        this.currentGame.duelState.clashInProgress = true;
+
+        // Clean up overlays/timers
+        const overlay = document.getElementById('duelWaitingOverlay');
+        if (overlay) overlay.remove();
+        const notif = document.getElementById('opponentSubmittedNotification');
+        if (notif) notif.remove();
+
+        if (this.currentGame.duelState.countdown) {
+            clearTimeout(this.currentGame.duelState.countdown);
+            this.currentGame.duelState.countdown = null;
+        }
+        if (this.currentGame.duelState.countdownInterval) {
+            clearInterval(this.currentGame.duelState.countdownInterval);
+            this.currentGame.duelState.countdownInterval = null;
+        }
+
+        const dr = this.currentGame.clashData;
+        const myTeam = this.currentGame.myTeam;
+        const yourTeamScore = myTeam === 'team1' ? dr.team1Score : dr.team2Score;
+        const enemyTeamScore = myTeam === 'team1' ? dr.team2Score : dr.team1Score;
+
+        this.showTeamClashScreen(yourTeamScore, enemyTeamScore, dr.damage);
+
+        // Reset round state
+        this.currentGame.duelState.roundScores = {};
+        this.currentGame.duelState.clashInProgress = false;
+        this.currentGame.duelState.clashReady = false;
+        if (this.currentGame.teamSubmissions) this.currentGame.teamSubmissions.clear();
+    }
+
+    showTeamClashScreen(yourScore, enemyScore, damage) {
+        const existingClash = document.getElementById('clashScreen');
+        if (existingClash) existingClash.remove();
+
+        const clashOverlay = document.createElement('div');
+        clashOverlay.id = 'clashScreen';
+        clashOverlay.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.9); display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 1001;
+            color: white; text-align: center; animation: clashEntry 0.5s ease-in-out;
+        `;
+
+        clashOverlay.innerHTML = `
+            <style>
+                @keyframes clashEntry { 0% { opacity: 0; transform: scale(0.8); } 100% { opacity: 1; transform: scale(1); } }
+                .clash-container { display: flex; align-items: center; justify-content: center; height: 200px; position: relative; }
+                .clash-number { font-size: 120px; font-weight: 900; color: #ffffff; text-shadow: 0 0 20px rgba(255,255,255,0.5); opacity: 0; position: absolute; }
+                .clash-number.left { animation: clashLeft 1.5s cubic-bezier(0.25, 0, 0.25, 1) both; }
+                .clash-number.right { animation: clashRight 1.5s cubic-bezier(0.25, 0, 0.25, 1) both; }
+                .clash-damage { font-size: 80px; font-weight: 900; color: #ff4444; text-shadow: 0 0 30px rgba(255,68,68,0.8); opacity: 0; animation: showDamage 2s ease-out both; animation-delay: 1.6s; }
+                .clash-labels { display: flex; justify-content: space-between; width: 80%; margin-bottom: 20px; font-size: 20px; font-weight: 600; }
+                @keyframes clashLeft { 0% { opacity: 0; transform: translateX(-50vw); } 2% { opacity: 1; } 50% { transform: translateX(-35vw); } 99% { opacity: 1; transform: translateX(-50px); } 100% { opacity: 0; transform: translateX(-50px); } }
+                @keyframes clashRight { 0% { opacity: 0; transform: translateX(50vw); } 2% { opacity: 1; } 50% { transform: translateX(35vw); } 99% { opacity: 1; transform: translateX(50px); } 100% { opacity: 0; transform: translateX(50px); } }
+                @keyframes showDamage { 0% { opacity: 0; transform: scale(0); } 1% { opacity: 1; transform: scale(1.3); } 5% { transform: scale(1); } 50% { opacity: 1; } 100% { opacity: 0; } }
+            </style>
+            <div class="clash-labels">
+                <span style="color: #87CEEB;">Your Team</span>
+                <span style="color: #ff6b6b;">Enemy Team</span>
+            </div>
+            <div class="clash-container">
+                <div class="clash-number left">${yourScore}</div>
+                <div class="clash-number right">${enemyScore}</div>
+                <div class="clash-damage">-${damage}</div>
+            </div>
+        `;
+
+        document.body.appendChild(clashOverlay);
+
+        // Apply health immediately
+        this.updateHealthAtGameSummary();
+
+        // After animation, show detailed results
+        setTimeout(() => {
+            clashOverlay.remove();
+            this.showDetailedTeamDuelResults();
+        }, 3600);
+    }
+
+    showDetailedTeamDuelResults() {
+        const existing = document.getElementById('detailedDuelResults');
+        if (existing) existing.remove();
+
+        this.updateHealthAtGameSummary();
+
+        const dr = this.currentGame.clashData;
+        const myTeam = this.currentGame.myTeam;
+        const enemyTeam = myTeam === 'team1' ? 'team2' : 'team1';
+        const maxHp = this.currentGame.duelHpMax || 100;
+
+        const myHealth = this.currentGame.duelHealth?.[myTeam] ?? 0;
+        const enemyHealth = this.currentGame.duelHealth?.[enemyTeam] ?? 0;
+        const myPct = (myHealth / maxHp) * 100;
+        const enemyPct = (enemyHealth / maxHp) * 100;
+
+        const yourTeamScore = myTeam === 'team1' ? dr.team1Score : dr.team2Score;
+        const enemyTeamScore = myTeam === 'team1' ? dr.team2Score : dr.team1Score;
+        const yourBestGuesser = myTeam === 'team1' ? dr.team1BestGuesser : dr.team2BestGuesser;
+        const enemyBestGuesser = myTeam === 'team1' ? dr.team2BestGuesser : dr.team1BestGuesser;
+
+        const iWon = dr.winner === myTeam;
+        const theyWon = dr.winner === enemyTeam;
+        const roundResult = dr.damage === 0 ? 'Draw — No Damage' :
+            iWon ? `Your Team dealt ${dr.damage} damage!` : `Enemy Team dealt ${dr.damage} damage!`;
+
+        // Get demon info
+        const roundIndex = this.currentGame.currentRound - 1;
+        const roundData = this.currentGame.rounds[roundIndex];
+        const demonName = roundData?.demon?.name || this.currentGame.currentDemon?.name || 'Unknown';
+        const actualPlacement = roundData?.actual || this.currentGame.currentDemon?.position || '?';
+
+        // Build per-player rows grouped by team
+        const buildPlayerRows = (memberIds, bestGuesser) => {
+            return memberIds.map(id => {
+                const member = this.currentParty?.members?.find(m => m.id === id);
+                const name = member?.name || id.slice(0, 6);
+                const score = dr.allScores?.[id] ?? 0;
+                const guess = dr.allGuesses?.[id];
+                const isBest = id === bestGuesser;
+                const isMe = id === window.multiplayerManager?.getSocketId();
+                const displayName = isMe ? 'You' : name;
+                return `<div style="display:flex;justify-content:space-between;padding:4px 8px;${isBest ? 'background:rgba(135,206,235,0.15);border-radius:4px;' : ''}">
+                    <span>${displayName}${isBest ? ' ★' : ''}</span>
+                    <span>Guess: ${guess !== undefined ? '#' + guess : '—'} | ${score} pts</span>
+                </div>`;
+            }).join('');
+        };
+
+        const myTeamMembers = this.currentParty?.teams?.[myTeam]?.members || [];
+        const enemyTeamMembers = this.currentParty?.teams?.[enemyTeam]?.members || [];
+
+        const getHealthColor = (pct) => pct > 50 ? '#4CAF50' : pct > 10 ? '#FFC107' : '#F44336';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'detailedDuelResults';
+        overlay.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.92); display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 1001;
+            color: white; overflow-y: auto; padding: 20px;
+        `;
+
+        // Buttons
+        let buttonsHtml;
+        if (this.isHost) {
+            const hasWinner = myHealth <= 0 || enemyHealth <= 0;
+            const btnText = hasWinner ? 'View Summary' : 'Next Round';
+            buttonsHtml = `<button id="duelNextRoundBtn" onclick="window.game.nextRound()" style="padding:12px 32px;font-size:16px;font-weight:700;background:#2D5A87;color:white;border:none;border-radius:8px;cursor:pointer;margin-top:16px;">${btnText}</button>`;
+        } else {
+            buttonsHtml = `<div style="color:#888;font-style:italic;margin-top:16px;">Waiting for host...</div>`;
+        }
+
+        overlay.innerHTML = `
+            <div style="max-width:500px;width:100%;">
+                <h2 style="text-align:center;margin-bottom:8px;">Round ${this.currentGame.currentRound}</h2>
+                <div style="text-align:center;color:#aaa;margin-bottom:16px;">${demonName} — #${actualPlacement}</div>
+
+                <!-- Health bars -->
+                <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;">
+                    <div style="flex:1;">
+                        <div style="font-size:13px;margin-bottom:4px;">Your Team</div>
+                        <div style="background:#333;border-radius:4px;height:20px;overflow:hidden;">
+                            <div style="width:${myPct}%;height:100%;background:${getHealthColor(myPct)};transition:width 0.5s;"></div>
+                        </div>
+                        <div style="font-size:12px;color:#aaa;">${myHealth}/${maxHp}</div>
+                    </div>
+                    <div style="font-weight:bold;color:#888;">VS</div>
+                    <div style="flex:1;">
+                        <div style="font-size:13px;margin-bottom:4px;">Enemy Team</div>
+                        <div style="background:#333;border-radius:4px;height:20px;overflow:hidden;">
+                            <div style="width:${enemyPct}%;height:100%;background:${getHealthColor(enemyPct)};transition:width 0.5s;"></div>
+                        </div>
+                        <div style="font-size:12px;color:#aaa;">${enemyHealth}/${maxHp}</div>
+                    </div>
+                </div>
+
+                <!-- Round result -->
+                <div style="text-align:center;font-size:18px;font-weight:700;margin-bottom:16px;color:${dr.damage === 0 ? '#888' : iWon ? '#87CEEB' : '#ff6b6b'};">
+                    ${roundResult}
+                </div>
+                <div style="text-align:center;color:#aaa;margin-bottom:16px;">Multiplier: ${(dr.multiplier || 1).toFixed(1)}x</div>
+
+                <!-- Best scores -->
+                <div style="display:flex;gap:16px;margin-bottom:16px;">
+                    <div style="flex:1;background:rgba(135,206,235,0.1);padding:10px;border-radius:8px;">
+                        <div style="font-weight:600;margin-bottom:4px;color:#87CEEB;">Your Team Best: ${yourTeamScore} pts</div>
+                        ${buildPlayerRows(myTeamMembers, yourBestGuesser)}
+                    </div>
+                    <div style="flex:1;background:rgba(255,107,107,0.1);padding:10px;border-radius:8px;">
+                        <div style="font-weight:600;margin-bottom:4px;color:#ff6b6b;">Enemy Team Best: ${enemyTeamScore} pts</div>
+                        ${buildPlayerRows(enemyTeamMembers, enemyBestGuesser)}
+                    </div>
+                </div>
+
+                <div style="text-align:center;">${buttonsHtml}</div>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
     }
 
     showClashScreen(player1Score, player2Score, damage, result) {
@@ -5016,18 +5299,18 @@ class DemonListGuessr {
                 <div style="display: flex; flex-direction: column; align-items: flex-start;">
                     <span style="color: #fff; font-weight: bold; font-size: 14px; margin-bottom: 4px;">You</span>
                     <div style="width: 120px; height: 12px; background: rgba(255,255,255,0.2); border-radius: 6px; overflow: hidden;">
-                        <div style="height: 100%; width: ${this.currentGame.duelHealth[currentUserId]}%; background: ${this.currentGame.duelHealth[currentUserId] > 50 ? '#4CAF50' : this.currentGame.duelHealth[currentUserId] > 10 ? '#FFC107' : '#F44336'}; transition: width 0.3s ease;"></div>
+                        <div style="height: 100%; width: ${(this.currentGame.duelHealth[currentUserId] / (this.currentGame.duelHpMax || 100)) * 100}%; background: ${(this.currentGame.duelHealth[currentUserId] / (this.currentGame.duelHpMax || 100)) * 100 > 50 ? '#4CAF50' : (this.currentGame.duelHealth[currentUserId] / (this.currentGame.duelHpMax || 100)) * 100 > 10 ? '#FFC107' : '#F44336'}; transition: width 0.3s ease;"></div>
                     </div>
-                    <span style="color: #fff; font-size: 12px; margin-top: 2px;">${this.currentGame.duelHealth[currentUserId] || 0}/100</span>
+                    <span style="color: #fff; font-size: 12px; margin-top: 2px;">${this.currentGame.duelHealth[currentUserId] || 0}/${this.currentGame.duelHpMax || 100}</span>
                 </div>
             </div>
             <div style="position: absolute; top: 20px; right: 20px; display: flex; align-items: center; gap: 10px;">
                 <div style="display: flex; flex-direction: column; align-items: flex-end;">
                     <span style="color: #fff; font-weight: bold; font-size: 14px; margin-bottom: 4px;">Opponent</span>
                     <div style="width: 120px; height: 12px; background: rgba(255,255,255,0.2); border-radius: 6px; overflow: hidden;">
-                        <div style="height: 100%; width: ${this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id]}%; background: ${this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] > 50 ? '#4CAF50' : this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] > 10 ? '#FFC107' : '#F44336'}; transition: width 0.3s ease;"></div>
+                        <div style="height: 100%; width: ${(this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] / (this.currentGame.duelHpMax || 100)) * 100}%; background: ${(this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] / (this.currentGame.duelHpMax || 100)) * 100 > 50 ? '#4CAF50' : (this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] / (this.currentGame.duelHpMax || 100)) * 100 > 10 ? '#FFC107' : '#F44336'}; transition: width 0.3s ease;"></div>
                     </div>
-                    <span style="color: #fff; font-size: 12px; margin-top: 2px;">${this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] || 0}/100</span>
+                    <span style="color: #fff; font-size: 12px; margin-top: 2px;">${this.currentGame.duelHealth[isPlayer1 ? player2Id : player1Id] || 0}/${this.currentGame.duelHpMax || 100}</span>
                 </div>
             </div>
 
@@ -5482,12 +5765,49 @@ class DemonListGuessr {
             return;
         }
         
+        // Handle team duel round completion
+        if (this.currentGame.gameType === 'teams' && data.damageResult?.isTeamDuel) {
+            console.log('[TEAMS] Received team duel round result:', data.damageResult);
+
+            // Store health update
+            if (data.damageResult.health) {
+                this.currentGame.pendingHealthUpdate = { ...data.damageResult.health };
+            }
+
+            // Store clash data
+            this.currentGame.clashData = {
+                ...data.damageResult,
+                currentDemon: this.currentGame.currentDemon ? {
+                    demon: this.currentGame.currentDemon,
+                    actual: this.currentGame.currentDemon.position
+                } : null
+            };
+
+            // Update playerScores from server totals
+            if (data.totalScores) {
+                for (const [pid, ts] of Object.entries(data.totalScores)) {
+                    this.currentGame.playerScores[pid] = ts;
+                }
+            }
+
+            // Store guesses
+            if (data.guesses) {
+                if (!this.currentGame.duelState.roundGuesses) {
+                    this.currentGame.duelState.roundGuesses = {};
+                }
+                Object.assign(this.currentGame.duelState.roundGuesses, data.guesses);
+            }
+
+            this.triggerTeamDuelClash();
+            return;
+        }
+
         // Handle opponent score submission in duel mode
         if (!this.currentGame.duelState) {
             console.log('[DEBUG] No duel state, returning');
             return;
         }
-        
+
         const scores = data.scores;
         const guesses = data.guesses || {};
         const totalScores = data.totalScores || {};
@@ -6025,61 +6345,62 @@ class DemonListGuessr {
         console.log('  Duel Health Object:', JSON.stringify(this.currentGame.duelHealth));
         console.log('  Party Members:', this.currentParty?.members?.map(m => ({id: m.id, name: m.name})));
         
-        // Get player IDs
-        const memberIds = this.currentParty.members.map(m => m.id);
-        const player1Id = memberIds[0];
-        const player2Id = memberIds[1];
-        
-        console.log('  Player 1 ID:', player1Id);
-        console.log('  Player 2 ID:', player2Id);
-        
         // Show health bars
         const healthDisplay = document.getElementById('duelHealthDisplay');
         if (healthDisplay) {
             healthDisplay.style.display = 'block';
         }
-        
-        // Map health display based on current user (not array order)
-        const currentUserId = this.getCurrentUserId();
-        const opponentId = memberIds.find(id => id !== currentUserId);
-        
-        const myHealth = this.currentGame.duelHealth[currentUserId] || 0;
-        const opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
-        
-        console.log('🩺 HEALTH MAPPING DEBUG (ENHANCED):');
-        console.log('  Current User ID:', currentUserId, '→ My Health:', myHealth);
-        console.log('  Opponent ID:', opponentId, '→ Opponent Health:', opponentHealth);
-        console.log('  Full duelHealth object:', this.currentGame.duelHealth);
-        console.log('  Health bars will show: You=' + myHealth + '/100, Opponent=' + opponentHealth + '/100');
-        
+
+        const maxHp = this.currentGame.duelHpMax || 100;
+        let myHealth, opponentHealth;
+        let myLabel = 'You', opponentLabel = 'Opponent';
+
+        if (this.currentGame.gameType === 'teams') {
+            const myTeam = this.currentGame.myTeam || 'team1';
+            const enemyTeam = myTeam === 'team1' ? 'team2' : 'team1';
+            myHealth = this.currentGame.duelHealth[myTeam] ?? 0;
+            opponentHealth = this.currentGame.duelHealth[enemyTeam] ?? 0;
+            myLabel = 'Your Team';
+            opponentLabel = 'Enemy Team';
+        } else {
+            const memberIds = this.currentParty.members.map(m => m.id);
+            const currentUserId = this.getCurrentUserId();
+            const opponentId = memberIds.find(id => id !== currentUserId);
+            myHealth = this.currentGame.duelHealth[currentUserId] || 0;
+            opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
+        }
+
         // Map to UI elements: player1 = "You", player2 = "Opponent"
         const player1Health = myHealth;        // "You" health bar
         const player2Health = opponentHealth;  // "Opponent" health bar
-        
-        const player1HealthPercent = (player1Health / 100) * 100;
-        const player2HealthPercent = (player2Health / 100) * 100;
+
+        const player1HealthPercent = (player1Health / maxHp) * 100;
+        const player2HealthPercent = (player2Health / maxHp) * 100;
         
         const player1Bar = document.getElementById('player1Health');
         const player2Bar = document.getElementById('player2Health');
         const player1Value = document.getElementById('player1HealthValue');
         const player2Value = document.getElementById('player2HealthValue');
-        
+
+        // Update labels for teams
+        const player1Label = document.querySelector('.player-health:first-child .player-label');
+        const player2Label = document.querySelector('.player-health:last-of-type .player-label');
+        if (player1Label) player1Label.textContent = myLabel;
+        if (player2Label) player2Label.textContent = opponentLabel;
+
         if (player1Bar) {
-            console.log('🔧 [HEALTH BAR] Updating player1Bar (You) to:', player1HealthPercent + '%', 'Health:', player1Health);
+            console.log('🔧 [HEALTH BAR] Updating player1Bar to:', player1HealthPercent + '%', 'Health:', player1Health);
             player1Bar.style.width = `${player1HealthPercent}%`;
             // Color coding: green > 50%, yellow 10-50%, red <= 10%
-            if (player1Health > 50) {
-                player1Bar.style.background = '#4CAF50'; // Green - override gradient
+            if (player1HealthPercent > 50) {
+                player1Bar.style.background = '#4CAF50';
                 player1Bar.style.backgroundColor = '#4CAF50';
-                console.log('🔧 [HEALTH BAR] Player1Bar set to GREEN');
-            } else if (player1Health > 10) {
-                player1Bar.style.background = '#FFC107'; // Yellow - override gradient
-                player1Bar.style.backgroundColor = '#FFC107';  
-                console.log('🔧 [HEALTH BAR] Player1Bar set to YELLOW');
+            } else if (player1HealthPercent > 10) {
+                player1Bar.style.background = '#FFC107';
+                player1Bar.style.backgroundColor = '#FFC107';
             } else {
-                player1Bar.style.background = '#F44336'; // Red - override gradient
+                player1Bar.style.background = '#F44336';
                 player1Bar.style.backgroundColor = '#F44336';
-                console.log('🔧 [HEALTH BAR] Player1Bar set to RED');
             }
         } else {
             console.error('❌ [HEALTH BAR] player1Bar element not found!');
@@ -6088,29 +6409,24 @@ class DemonListGuessr {
             console.log('🔧 [HEALTH BAR] Updating player2Bar (Opponent) to:', player2HealthPercent + '%', 'Health:', player2Health);
             player2Bar.style.width = `${player2HealthPercent}%`;
             // Color coding: green > 50%, yellow 10-50%, red <= 10%
-            if (player2Health > 50) {
-                player2Bar.style.background = '#4CAF50'; // Green - override gradient
+            if (player2HealthPercent > 50) {
+                player2Bar.style.background = '#4CAF50';
                 player2Bar.style.backgroundColor = '#4CAF50';
-                console.log('🔧 [HEALTH BAR] Player2Bar set to GREEN');
-            } else if (player2Health > 10) {
-                player2Bar.style.background = '#FFC107'; // Yellow - override gradient
+            } else if (player2HealthPercent > 10) {
+                player2Bar.style.background = '#FFC107';
                 player2Bar.style.backgroundColor = '#FFC107';
-                console.log('🔧 [HEALTH BAR] Player2Bar set to YELLOW');
             } else {
-                player2Bar.style.background = '#F44336'; // Red - override gradient
+                player2Bar.style.background = '#F44336';
                 player2Bar.style.backgroundColor = '#F44336';
-                console.log('🔧 [HEALTH BAR] Player2Bar set to RED');
             }
         } else {
             console.error('❌ [HEALTH BAR] player2Bar element not found!');
         }
         if (player1Value) {
-            console.log('💉 [HEALTH TEXT UPDATE] Setting player1Value (You) to:', `${player1Health}/100`);
-            player1Value.textContent = `${player1Health}/100`;
+            player1Value.textContent = `${player1Health}/${maxHp}`;
         }
         if (player2Value) {
-            console.log('💉 [HEALTH TEXT UPDATE] Setting player2Value (Opponent) to:', `${player2Health}/100`);
-            player2Value.textContent = `${player2Health}/100`;
+            player2Value.textContent = `${player2Health}/${maxHp}`;
         }
         
         // CRITICAL: Health bars are properly handled by the clash screen's inline templates
@@ -6167,18 +6483,23 @@ class DemonListGuessr {
         const health1 = healthValues[0];
         const health2 = healthValues[1];
         
-        // Determine which player took damage by checking current user ID
-        const currentUserId = this.getCurrentUserId();
+        // Determine which side is "You" / "Your Team"
         let player1Health, player2Health;
-        
-        if (healthKeys[0] === currentUserId) {
-            // Current user is first in health object
-            player1Health = health1;  // "You"
-            player2Health = health2;  // "Opponent"
+
+        if (this.currentGame.gameType === 'teams') {
+            const myTeam = this.currentGame.myTeam || 'team1';
+            const enemyTeam = myTeam === 'team1' ? 'team2' : 'team1';
+            player1Health = this.currentGame.duelHealth[myTeam] ?? 0;
+            player2Health = this.currentGame.duelHealth[enemyTeam] ?? 0;
         } else {
-            // Current user is second in health object
-            player1Health = health2;  // "You" 
-            player2Health = health1;  // "Opponent"
+            const currentUserId = this.getCurrentUserId();
+            if (healthKeys[0] === currentUserId) {
+                player1Health = health1;
+                player2Health = health2;
+            } else {
+                player1Health = health2;
+                player2Health = health1;
+            }
         }
         
         console.log('[HEALTH-DEBUG] Health values:', { 
@@ -6203,29 +6524,32 @@ class DemonListGuessr {
         });
         
         // Just update both health bars with their actual values
+        const maxHp = this.currentGame?.duelHpMax || 100;
         if (player1HealthFill && player1HealthText) {
             console.log('[HEALTH-DEBUG] 🔧 Updating Player 1 health bar to:', player1Health);
             console.log('[HEALTH-DEBUG] 🔧 Player1 element ID:', player1HealthFill.id, 'current width before:', player1HealthFill.style.width);
-            player1HealthFill.style.width = `${player1Health}%`;
-            player1HealthText.textContent = `${player1Health}/100`;
+            player1HealthFill.style.width = `${(player1Health / maxHp) * 100}%`;
+            player1HealthText.textContent = `${player1Health}/${maxHp}`;
             console.log('[HEALTH-DEBUG] 🔧 Player1 width after update:', player1HealthFill.style.width);
         }
-        
+
         if (player2HealthFill && player2HealthText) {
             console.log('[HEALTH-DEBUG] 🔧 Updating Player 2 health bar to:', player2Health);
             console.log('[HEALTH-DEBUG] 🔧 Player2 element ID:', player2HealthFill.id, 'current width before:', player2HealthFill.style.width);
-            player2HealthFill.style.width = `${player2Health}%`;
-            player2HealthText.textContent = `${player2Health}/100`;
+            player2HealthFill.style.width = `${(player2Health / maxHp) * 100}%`;
+            player2HealthText.textContent = `${player2Health}/${maxHp}`;
             console.log('[HEALTH-DEBUG] 🔧 Player2 width after update:', player2HealthFill.style.width);
         }
         
         console.log('[HEALTH-DEBUG] ✅ forceHealthBarUpdate complete');
         
         // MUTATION OBSERVER: Track what changes the health bars after we set them
+        const p1Pct = (player1Health / maxHp) * 100;
+        const p2Pct = (player2Health / maxHp) * 100;
         if (player1HealthFill && player2HealthFill) {
-            this.setupHealthBarWatcher(player1HealthFill, player2HealthFill, player1Health, player2Health);
+            this.setupHealthBarWatcher(player1HealthFill, player2HealthFill, p1Pct, p2Pct);
         }
-        
+
         // Check if DOM values get overridden after a delay
         setTimeout(() => {
             const currentPlayer1Width = player1HealthFill?.style.width;
@@ -6235,7 +6559,7 @@ class DemonListGuessr {
             console.log('[HEALTH-DEBUG] 🔍 DOM CHECK after 100ms:');
             console.log('[HEALTH-DEBUG] Player1 width:', currentPlayer1Width, 'text:', currentPlayer1Text);
             console.log('[HEALTH-DEBUG] Player2 width:', currentPlayer2Width, 'text:', currentPlayer2Text);
-            if (currentPlayer1Width !== `${player1Health}%` || currentPlayer2Width !== `${player2Health}%`) {
+            if (currentPlayer1Width !== `${p1Pct}%` || currentPlayer2Width !== `${p2Pct}%`) {
                 console.log('[HEALTH-DEBUG] ❌ VALUES WERE OVERRIDDEN! Something else changed the DOM');
             } else {
                 console.log('[HEALTH-DEBUG] ✅ Values are still correct');
@@ -6294,34 +6618,45 @@ class DemonListGuessr {
             return;
         }
         
-        // Get player IDs and map health
-        const memberIds = this.currentParty.members.map(m => m.id);
-        const currentUserId = this.getCurrentUserId();
-        const opponentId = memberIds.find(id => id !== currentUserId);
-        
-        const myHealth = this.currentGame.duelHealth[currentUserId] || 0;
-        const opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
-        
+        const maxHp = this.currentGame.duelHpMax || 100;
+        let myHealth, opponentHealth;
+
+        if (this.currentGame.gameType === 'teams') {
+            const myTeam = this.currentGame.myTeam || 'team1';
+            const enemyTeam = myTeam === 'team1' ? 'team2' : 'team1';
+            myHealth = this.currentGame.duelHealth[myTeam] ?? 0;
+            opponentHealth = this.currentGame.duelHealth[enemyTeam] ?? 0;
+        } else {
+            const memberIds = this.currentParty.members.map(m => m.id);
+            const currentUserId = this.getCurrentUserId();
+            const opponentId = memberIds.find(id => id !== currentUserId);
+            myHealth = this.currentGame.duelHealth[currentUserId] || 0;
+            opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
+        }
+
+        const myPct = (myHealth / maxHp) * 100;
+        const oppPct = (opponentHealth / maxHp) * 100;
+
         // Update text values
         const player1Value = document.getElementById('player1HealthValue');
         const player2Value = document.getElementById('player2HealthValue');
-        
+
         if (player1Value) {
-            player1Value.textContent = `${myHealth}/100`;
+            player1Value.textContent = `${myHealth}/${maxHp}`;
         }
         if (player2Value) {
-            player2Value.textContent = `${opponentHealth}/100`;
+            player2Value.textContent = `${opponentHealth}/${maxHp}`;
         }
-        
+
         // Update colors only (not width)
         const player1Bar = document.getElementById('player1Health');
         const player2Bar = document.getElementById('player2Health');
-        
+
         if (player1Bar) {
-            if (myHealth > 50) {
+            if (myPct > 50) {
                 player1Bar.style.background = '#4CAF50';
                 player1Bar.style.backgroundColor = '#4CAF50';
-            } else if (myHealth > 10) {
+            } else if (myPct > 10) {
                 player1Bar.style.background = '#FFC107';
                 player1Bar.style.backgroundColor = '#FFC107';
             } else {
@@ -6329,12 +6664,12 @@ class DemonListGuessr {
                 player1Bar.style.backgroundColor = '#F44336';
             }
         }
-        
+
         if (player2Bar) {
-            if (opponentHealth > 50) {
+            if (oppPct > 50) {
                 player2Bar.style.background = '#4CAF50';
                 player2Bar.style.backgroundColor = '#4CAF50';
-            } else if (opponentHealth > 10) {
+            } else if (oppPct > 10) {
                 player2Bar.style.background = '#FFC107';
                 player2Bar.style.backgroundColor = '#FFC107';
             } else {
@@ -6428,20 +6763,20 @@ class DemonListGuessr {
         document.getElementById('currentScore').textContent = this.currentGame.score;
         
         // Handle duel-specific display
-        if (this.currentGame.gameType === 'duels') {
-            console.log('🔍 [TIMER-DEBUG] showResult called for duels - checking health state');
+        if (this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams') {
+            console.log('🔍 [TIMER-DEBUG] showResult called for duels/teams - checking health state');
             console.log('🔍 [TIMER-DEBUG] Current duelHealth:', this.currentGame.duelHealth);
-            
+
             // Health update is now handled in showDuelResults() before calling showResult()
-            // Just update the display with the current health values  
+            // Just update the display with the current health values
             console.log('🩺 [SHOW RESULT] Using current health (already updated in showDuelResults):', this.currentGame.duelHealth);
-            
+
             this.updateDuelDisplay();
-            
+
             // AGGRESSIVE HEALTH FIX: Force update health bars with current values
             console.log('🔍 [TIMER-DEBUG] 💪 AGGRESSIVE: Forcing health bar update with current values');
             this.forceHealthBarUpdate();
-            
+
             // No fallback needed - health is already applied in showDuelResults()
         }
         
@@ -6561,6 +6896,13 @@ class DemonListGuessr {
         // Check if duel is over (someone won)
         if (this.currentGame.duelWinner) {
             console.log('🎮 [CLIENT] Duel is over - showing final results');
+            // Broadcast to all players so non-hosts also transition to results
+            if (this.isHost && this.currentGame.isParty && window.multiplayerManager) {
+                console.log('🎮 [CLIENT] Host broadcasting showFinalResults to all players');
+                window.multiplayerManager.socket.emit('showFinalResults', {
+                    partyCode: this.currentParty?.code
+                });
+            }
             this.endGame();
             return;
         }
@@ -6667,8 +7009,8 @@ class DemonListGuessr {
         const finalScoreElement = document.getElementById('finalScore');
         finalScoreElement.textContent = finalScore;
         
-        // For duels, make the total score completely white instead of gradient
-        if (this.currentGame.gameType === 'duels') {
+        // For duels/teams, make the total score completely white instead of gradient
+        if (this.currentGame.gameType === 'duels' || this.currentGame.gameType === 'teams') {
             finalScoreElement.style.background = 'none';
             finalScoreElement.style.webkitBackgroundClip = 'unset';
             finalScoreElement.style.webkitTextFillColor = 'unset';
@@ -6722,8 +7064,8 @@ class DemonListGuessr {
         console.log('🔴 [DEBUG] ✅ showScreen("resultsScreen") completed');
         console.log('🔴 [DEBUG] Current screen after transition:', document.querySelector('.screen.active')?.id);
         
-        // Change button text for duels
-        if (this.currentGame?.isParty && this.currentGame?.gameType === 'duels') {
+        // Change button text for duels/teams
+        if (this.currentGame?.isParty && (this.currentGame?.gameType === 'duels' || this.currentGame?.gameType === 'teams')) {
             const playAgainBtn = document.querySelector('.play-again-btn');
             if (playAgainBtn) {
                 playAgainBtn.textContent = 'Back to Lobby';
@@ -6777,39 +7119,54 @@ class DemonListGuessr {
                 </div>
             `;
         } else if (gameType === 'teams') {
-            // Teams: Show team scores with real member names
-            const teams = Object.values(this.currentGame.teams).filter(team => team.members.length > 0);
-            const teamScores = teams.map(team => ({
-                name: team.name,
-                score: Math.floor(this.currentGame.score * (Math.random() * 0.3 + 0.7)),
-                members: team.members.map(memberId => {
-                    const member = this.currentParty.members.find(m => m.id === memberId);
-                    if (!member) return 'Unknown';
-                    return member.id === 'host' ? (localStorage.getItem('username') || 'You') : member.name.replace(' (Host)', '');
-                })
-            }));
-            teamScores.sort((a, b) => b.score - a.score);
-            
+            // Team Duels: Show victory/defeat with health bars
+            const myTeam = this.currentGame.myTeam || 'team1';
+            const enemyTeam = myTeam === 'team1' ? 'team2' : 'team1';
+            const maxHp = this.currentGame.duelHpMax || 100;
+            const myHealth = this.currentGame.duelHealth?.[myTeam] ?? 0;
+            const enemyHealth = this.currentGame.duelHealth?.[enemyTeam] ?? 0;
+
+            let winMessage = '';
+            let youWon = false, theyWon = false;
+            if (myHealth > 0 && enemyHealth <= 0) { winMessage = 'Victory'; youWon = true; }
+            else if (myHealth <= 0 && enemyHealth > 0) { winMessage = 'Defeat'; theyWon = true; }
+            else if (myHealth <= 0 && enemyHealth <= 0) { winMessage = 'Draw'; }
+            else { winMessage = 'Battle continues...'; }
+
+            const myPct = (myHealth / maxHp) * 100;
+            const enemyPct = (enemyHealth / maxHp) * 100;
+            const getColor = (pct) => pct > 50 ? '#4CAF50' : pct > 10 ? '#FFC107' : '#F44336';
+
             roundSummary.innerHTML = `
                 <div class="party-results">
-                    <h3>Team Results</h3>
-                    <div class="team-leaderboard">
-                        ${teamScores.map((team, index) => `
-                            <div class="team-result ${index === 0 ? 'winner' : ''}">
-                                <div class="team-rank">#${index + 1}</div>
-                                <div class="team-info">
-                                    <h4>${team.name}</h4>
-                                    <p>${team.members.join(', ')}</p>
+                    <h3>Team Duel Results</h3>
+                    <div class="duel-victory-message">
+                        <h2 style="color: ${youWon ? '#ffd93d' : theyWon ? '#ff6b6b' : '#888'}; font-size: 48px; margin: 20px 0;">${winMessage}</h2>
+                    </div>
+                    <div class="duel-final-health">
+                        <div class="final-health-display">
+                            <div class="player-final-health">
+                                <span class="player-name">Your Team</span>
+                                <div class="health-bar">
+                                    <div class="health-fill" style="width: ${myPct}%; background: ${getColor(myPct)};"></div>
                                 </div>
-                                <div class="team-score">${team.score} pts</div>
+                                <span class="health-value">${myHealth}/${maxHp} HP</span>
                             </div>
-                        `).join('')}
+                            <div class="vs-final">VS</div>
+                            <div class="player-final-health">
+                                <span class="player-name">Enemy Team</span>
+                                <div class="health-bar">
+                                    <div class="health-fill" style="width: ${enemyPct}%; background: ${getColor(enemyPct)};"></div>
+                                </div>
+                                <span class="health-value">${enemyHealth}/${maxHp} HP</span>
+                            </div>
+                        </div>
                     </div>
                     <div class="rounds-summary">
                         <h4>Your Performance</h4>
                         ${this.currentGame.rounds.map((round, index) => `
                             <div class="round-item">
-                                <div><strong>Round ${index + 1}:</strong> ${round.demon.name}</div>
+                                <div><strong>Round ${index + 1}:</strong> ${round.demon?.name || 'Unknown'}</div>
                                 <div>Your Guess: ${this.formatGuessDisplay(round.guess)} | Actual: #${round.actual} | Points: ${round.points}</div>
                             </div>
                         `).join('')}
@@ -6866,17 +7223,17 @@ class DemonListGuessr {
                             <div class="player-final-health">
                                 <span class="player-name">You</span>
                                 <div class="health-bar">
-                                    <div class="health-fill" style="width: ${myHealth}%; background: ${myHealth > 50 ? '#4CAF50' : myHealth > 10 ? '#FFC107' : '#F44336'};"></div>
+                                    <div class="health-fill" style="width: ${(myHealth / (this.currentGame.duelHpMax || 100)) * 100}%; background: ${(myHealth / (this.currentGame.duelHpMax || 100)) * 100 > 50 ? '#4CAF50' : (myHealth / (this.currentGame.duelHpMax || 100)) * 100 > 10 ? '#FFC107' : '#F44336'};"></div>
                                 </div>
-                                <span class="health-value">${myHealth}/100 HP</span>
+                                <span class="health-value">${myHealth}/${this.currentGame.duelHpMax || 100} HP</span>
                             </div>
                             <div class="vs-final">VS</div>
                             <div class="player-final-health">
                                 <span class="player-name">${opponentName}</span>
                                 <div class="health-bar">
-                                    <div class="health-fill" style="width: ${opponentHealth}%; background: ${opponentHealth > 50 ? '#4CAF50' : opponentHealth > 10 ? '#FFC107' : '#F44336'};"></div>
+                                    <div class="health-fill" style="width: ${(opponentHealth / (this.currentGame.duelHpMax || 100)) * 100}%; background: ${(opponentHealth / (this.currentGame.duelHpMax || 100)) * 100 > 50 ? '#4CAF50' : (opponentHealth / (this.currentGame.duelHpMax || 100)) * 100 > 10 ? '#FFC107' : '#F44336'};"></div>
                                 </div>
-                                <span class="health-value">${opponentHealth}/100 HP</span>
+                                <span class="health-value">${opponentHealth}/${this.currentGame.duelHpMax || 100} HP</span>
                             </div>
                         </div>
                     </div>
@@ -6918,30 +7275,29 @@ class DemonListGuessr {
     }
 
     playAgain() {
-        // For duels, go back to party setup screen to stay in party
-        if (this.currentGame?.isParty && this.currentGame?.gameType === 'duels') {
-            this.showScreen('partySetupScreen');
-        } else {
-            // For solo games, go to game setup screen
-            this.showScreen('gameSetupScreen');
+        // For multiplayer party games, do a full page refresh to clear all stale state
+        if (this.currentGame?.isParty && this.currentParty?.code) {
+            const code = this.currentParty.code;
+            console.log('[LOBBY] playAgain — refreshing page for party:', code);
+            sessionStorage.setItem('dlg_rejoin_party', code);
+            window.location.href = '/?party=' + code;
+            return;
         }
+        // Solo games stay SPA
+        this.showScreen('gameSetupScreen');
     }
 
     backToLobby() {
-        // CRITICAL FIX: Hide duel health display when returning to lobby
-        const healthDisplay = document.getElementById('duelHealthDisplay');
-        if (healthDisplay) {
-            healthDisplay.style.display = 'none';
-            console.log('🔄 [LOBBY] Hidden health display when returning to lobby');
+        // For multiplayer party games, do a full page refresh to clear all stale state
+        if (this.currentGame?.isParty && this.currentParty?.code) {
+            const code = this.currentParty.code;
+            console.log('[LOBBY] backToLobby — refreshing page for party:', code);
+            sessionStorage.setItem('dlg_rejoin_party', code);
+            window.location.href = '/?party=' + code;
+            return;
         }
-        
-        // For all multiplayer party games, go back to party setup screen
-        if (this.currentGame?.isParty) {
-            this.showScreen('partySetupScreen');
-        } else {
-            // For solo games, go to game setup screen  
-            this.showScreen('gameSetupScreen');
-        }
+        // Solo games stay SPA
+        this.showScreen('gameSetupScreen');
     }
 
     quitGame() {
@@ -7167,15 +7523,6 @@ class DemonListGuessr {
     }
 
 
-    getLeaderboard(type) {
-        const stored = localStorage.getItem(`leaderboard_${type}`);
-        return stored ? JSON.parse(stored) : this.generateMockLeaderboard();
-    }
-
-    generateMockLeaderboard() {
-        return [];
-    }
-
     loadStats() {
         const stored = localStorage.getItem('demonGuessr_stats');
         return stored ? JSON.parse(stored) : {
@@ -7298,55 +7645,30 @@ class DemonListGuessr {
     }
 
     saveDailyScore(score) {
-        const today = new Date().toDateString();
         const username = localStorage.getItem('username') || `Player${Math.floor(Math.random()*1000)}`;
-        
-        let dailyLeaderboard = JSON.parse(localStorage.getItem('dailyLeaderboard') || '{}');
-        
-        if (!dailyLeaderboard[today]) {
-            dailyLeaderboard[today] = [];
-        }
-        
-        dailyLeaderboard[today].push({
-            name: username,
-            score: score,
-            time: Date.now(),
-            customAvatar: localStorage.getItem('customAvatar')
-        });
-        
-        // Sort by score descending
-        dailyLeaderboard[today].sort((a, b) => b.score - a.score);
-        
-        localStorage.setItem('dailyLeaderboard', JSON.stringify(dailyLeaderboard));
-        console.log('Saved daily score:', score, 'for', username);
-        console.log('Today\'s leaderboard:', dailyLeaderboard[today]);
+        console.log('Submitting daily score to server:', score, 'for', username);
+
+        fetch('/api/leaderboard/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: username, score: score })
+        }).then(() => {
+            // Refresh leaderboard if it's currently visible
+            const leaderboardScreen = document.getElementById('leaderboardScreen');
+            if (leaderboardScreen && leaderboardScreen.style.display !== 'none') {
+                this.fetchAndRenderLeaderboard('daily');
+            }
+        }).catch(err => console.error('Failed to submit daily score:', err));
     }
 
     showDailyLeaderboard() {
-        const today = new Date().toDateString();
-        const dailyLeaderboard = JSON.parse(localStorage.getItem('dailyLeaderboard') || '{}');
-        const todayScores = dailyLeaderboard[today] || [];
-        
         this.showScreen('leaderboardScreen');
-        
+
         // Set daily tab as active
         document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
         document.querySelector('.tab-btn').classList.add('active');
-        
-        const leaderboardList = document.getElementById('leaderboardList');
-        if (todayScores.length === 0) {
-            leaderboardList.innerHTML = '<div class="leaderboard-item"><span>No scores yet today! Be the first to play.</span><span>-</span></div>';
-        } else {
-            leaderboardList.innerHTML = todayScores.slice(0, 10).map((entry, index) => `
-                <div class="leaderboard-item">
-                    <div class="leaderboard-player">
-                        ${this.getUserAvatar(entry.name, entry.customAvatar)}
-                        <span>#${index + 1} ${entry.name}</span>
-                    </div>
-                    <span>${entry.score} points</span>
-                </div>
-            `).join('');
-        }
+
+        this.fetchAndRenderLeaderboard('daily');
     }
 
     showLeaderboard(type) {
@@ -7354,43 +7676,35 @@ class DemonListGuessr {
             btn.classList.remove('active');
         });
         event.target.classList.add('active');
-        
+
+        this.fetchAndRenderLeaderboard(type);
+    }
+
+    fetchAndRenderLeaderboard(type) {
         const leaderboardList = document.getElementById('leaderboardList');
-        
-        if (type === 'daily') {
-            const today = new Date().toDateString();
-            const dailyLeaderboard = JSON.parse(localStorage.getItem('dailyLeaderboard') || '{}');
-            const todayScores = dailyLeaderboard[today] || [];
-            
-            if (todayScores.length === 0) {
-                leaderboardList.innerHTML = '<div class="leaderboard-item">No scores yet today!</div>';
-            } else {
-                leaderboardList.innerHTML = todayScores.slice(0, 10).map((entry, index) => `
+        leaderboardList.innerHTML = '<div class="leaderboard-item" style="justify-content: center; color: #888;">Loading...</div>';
+
+        fetch(`/api/leaderboard?type=${type}`)
+            .then(res => res.json())
+            .then(scores => {
+                if (!scores || scores.length === 0) {
+                    leaderboardList.innerHTML = '<div class="leaderboard-item" style="justify-content: center; color: #888;">No scores yet!</div>';
+                    return;
+                }
+                leaderboardList.innerHTML = scores.map((entry, index) => `
                     <div class="leaderboard-item">
                         <div class="leaderboard-player">
-                            ${this.getUserAvatar(entry.name, entry.customAvatar)}
+                            ${this.getUserAvatar(entry.name)}
                             <span>#${index + 1} ${entry.name}</span>
                         </div>
                         <span>${entry.score} points</span>
                     </div>
                 `).join('');
-            }
-        } else {
-            const leaderboard = this.getLeaderboard(type);
-            if (leaderboard.length === 0) {
-                leaderboardList.innerHTML = '<div class="leaderboard-item">No scores yet!</div>';
-            } else {
-                leaderboardList.innerHTML = leaderboard.map((entry, index) => `
-                    <div class="leaderboard-item">
-                        <div class="leaderboard-player">
-                            ${this.getUserAvatar(entry.name, entry.customAvatar)}
-                            <span>#${index + 1} ${entry.name}</span>
-                        </div>
-                        <span>${entry.score} points</span>
-                    </div>
-                `).join('');
-            }
-        }
+            })
+            .catch(err => {
+                console.error('Failed to fetch leaderboard:', err);
+                leaderboardList.innerHTML = '<div class="leaderboard-item" style="justify-content: center; color: #f44;">Failed to load leaderboard</div>';
+            });
     }
     
     // Debug helper methods
@@ -7442,23 +7756,7 @@ class DemonListGuessr {
         });
     }
 
-    // Connect to multiplayer server
-    connectToMultiplayer() {
-        console.log('[DEBUG] Connecting to multiplayer server');
-        
-        // Check if multiplayer manager exists
-        if (typeof window.multiplayerManager === 'undefined') {
-            console.log('[DEBUG] MultiplayerManager not found, retrying in 1 second');
-            setTimeout(() => this.connectToMultiplayer(), 1000);
-            return;
-        }
-        
-        // Connect to the server
-        window.multiplayerManager.connect();
-        
-        // Set up event callbacks
-        this.setupMultiplayerCallbacks();
-    }
+    // REMOVED: duplicate connectToMultiplayer() — the real one is defined earlier (~line 981)
     
     // Set up multiplayer event callbacks - DUPLICATE REMOVED
     setupMultiplayerCallbacks_REMOVED() {

@@ -20,7 +20,7 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 ### Game Modes
 
 - **Solo/Classic** — Single player, 5 rounds, score accumulation
-- **Duels** — 1v1 health-based combat, 100 HP each, rounds until someone hits 0 HP
+- **Duels** — 1v1 health-based combat, configurable starting HP (1–10000, default 100), rounds until someone hits 0 HP
 - **FFA (Free-For-All)** — 3+ players, individual scoring over 5 rounds
 - **Teams** — Team-based scoring (partially implemented)
 
@@ -30,7 +30,7 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 
 ### Game Flow
 
-1. **Lobby** — Host creates a party (generates a code), other player joins. Host selects "Duels" mode and starts the game.
+1. **Lobby** — Host creates a party (generates a code), other player joins. Host selects "Duels" mode, configures starting HP (default 100), and starts the game.
 
 2. **Each Round:**
    - Both players see the same demon's video/thumbnail
@@ -128,6 +128,35 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 
 ---
 
+## What We Fixed (Session 2 — 2026-03-03)
+
+### Feature: Adjustable HP Setting for 1v1 Duels
+**Change:** Duel health is no longer hardcoded to 100. Host can now configure starting HP (1–10000) in the duel lobby via a number input that appears when "Duels" mode is selected.
+**Files:** `index.html` (new `duelHpSection`), `game.js` (show/hide logic, read value, pass in `gameData`, all health bar displays use `duelHpMax` for percentage/text), `server.js` (accept `duelHp`, store as `party.duelHpSetting`, use for all health initialization).
+**Key detail:** `updateGameType` no longer pre-initializes `duelHealth` with values — it just clears it. `startGame` is the sole place health is initialized from the configured HP, ensuring the host's chosen value is always used.
+
+### Bug Fix: URL Not Cleaned When Host Leaves
+**Problem:** When the host left a party, the non-host was kicked back to the home screen but the `?party=XXXX` parameter remained in the browser URL.
+**Root Cause:** There were two `handlePartyEnded()` methods in `game.js` (lines 1727 and 1850). The second one (which overrides the first) was missing `window.history.replaceState()` to clean the URL.
+**Fix:** Added URL cleanup to the active `handlePartyEnded` method.
+
+### Bug Fix: Socket Reconnection Desync (Guesses Not Communicated)
+**Problem:** After ~2 minutes of idle time during a duel round, the host's guess was never received by the non-host, and vice versa. Both players' submissions went into the void.
+**Root Cause:** Socket.IO connections can silently disconnect and reconnect during idle periods. On reconnect, the client gets a **new socket ID** but never rejoined the party on the server. The server still mapped the old (dead) socket ID to the party member, so all events (`playerScoreSubmitted`, `roundComplete`) were sent to the dead socket.
+**Fixes (5 changes across 3 files):**
+
+1. **Client auto-rejoin** (`multiplayer.js` `connect` handler): On socket reconnect, if we have a `currentParty`, automatically emit `rejoinParty` to re-associate the new socket ID with the party.
+
+2. **Server grace period** (`server.js` disconnect handler): ALL in-party disconnects now get a 10-second grace period before `handlePlayerLeave` fires. Previously only post-game disconnects had this. Gives time for the socket to reconnect and rejoin without auto-submitting 0 or removing the player.
+
+3. **Server rejoin state migration** (`server.js` `rejoinParty` handler): When a player rejoins, all game state references (`scores`, `guesses`, `totalScores`, `submittedPlayers`, `duelHealth`, `roundScores`) are migrated from the old socket ID to the new one. Also cleans up old `userParties` mapping.
+
+4. **Client disconnect resilience** (`multiplayer.js` disconnect handler): No longer immediately sets `hasLeftGame = true` and triggers aggressive cleanup on transient disconnects. Waits 12 seconds — only if still disconnected then treats it as permanent.
+
+5. **Countdown safety** (`game.js` `startDuelCountdown`): The 15-second countdown no longer calls `triggerDuelClash()` client-side when it expires. It only auto-submits a score of 0 to the server if the current player is the one who didn't guess. The server's `roundComplete` event is the sole trigger for advancing the round, preventing client-server desync.
+
+---
+
 ## What We Want to Achieve
 
 ### Immediate Goals
@@ -137,14 +166,16 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 - No server crashes during normal gameplay flow
 
 ### Known Remaining Issues
-- FFA mode has various bugs (not yet investigated this session)
+- FFA mode has various bugs (not yet investigated)
 - Teams mode is partially implemented
 - `PROJECT_STATUS.md` is outdated and describes bugs that have been fixed
 - Extensive debug logging still present in code (can be cleaned up once stable)
-- The 3.8s `duelVictory` delay in `handleRoundComplete` (line 1057 server.js) creates a tight race with the 3.6s + 200ms client-side clash animation — could cause issues if network latency varies
+- The 3.8s `duelVictory` delay in `handleRoundComplete` creates a tight race with the 3.6s + 200ms client-side clash animation — could cause issues if network latency varies
+- Duplicate `handlePartyEnded()` method in `game.js` (lines ~1727 and ~1850) — the first is dead code and should be removed
 
 ### Future Goals
 - Clean up debug logging throughout codebase
+- Remove dead code (duplicate methods, unused branches)
 - Stabilize FFA and Teams modes
 - Production deployment (Railway.app support exists)
 - Expanded demon list / data sources

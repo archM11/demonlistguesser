@@ -67,38 +67,29 @@ class MultiplayerManager {
         this.socket.on('connect', () => {
             console.log('[MULTIPLAYER] Connected to server with ID:', this.socket.id);
             this.connected = true;
-            
+
+            // Cancel any pending disconnect cleanup
+            if (this._disconnectCleanupTimer) {
+                clearTimeout(this._disconnectCleanupTimer);
+                this._disconnectCleanupTimer = null;
+            }
+
+            // Auto-rejoin party if we were in one (handles silent reconnects)
+            if (this.currentParty?.code) {
+                const username = window.game?.playerName || this.currentParty.members?.[0]?.name || 'Player';
+                console.log(`[MULTIPLAYER] Auto-rejoining party ${this.currentParty.code} as ${username}`);
+                this.socket.emit('rejoinParty', {
+                    partyCode: this.currentParty.code,
+                    username: username
+                });
+            }
+
             // Clear hasLeftGame flag when reconnecting
             if (window.game && window.game.hasLeftGame) {
                 window.game.hasLeftGame = false;
-                
-                // Re-setup multiplayer callbacks after reconnect
                 window.game.setupMultiplayerCallbacks();
             }
-            
-            // Check if we need to restore party state after refresh
-            if (this.pendingPartyRestore) {
-                console.log('[RESTORE] Attempting to restore party state after connection');
-                const party = this.pendingPartyRestore;
-                const wasHost = this.pendingIsHost;
-                
-                // Clear pending restore
-                this.pendingPartyRestore = null;
-                this.pendingIsHost = null;
-                
-                // Rejoin the party
-                if (party.code) {
-                    console.log('[RESTORE] Rejoining party:', party.code);
-                    const username = localStorage.getItem('username') || 'Player';
-                    this.socket.emit('rejoinParty', {
-                        partyCode: party.code,
-                        username: username,
-                        wasHost: wasHost,
-                        gameState: party.gameState
-                    });
-                }
-            }
-            
+
             if (this.onConnected) this.onConnected();
             this.syncToLocalStorage();
         });
@@ -129,43 +120,20 @@ class MultiplayerManager {
         this.socket.on('disconnect', (reason) => {
             console.log('[MULTIPLAYER] Disconnected from server:', reason);
             this.connected = false;
-            
-            // HEURISTIC FIX: Graceful disconnect handling
+
+            // Don't panic on transient disconnects — the auto-rejoin in the
+            // 'connect' handler will restore the session.  Only flag the game
+            // as left if we're still disconnected after a generous window that
+            // exceeds the server's 10-second grace period.
             if (this.currentParty && window.game) {
-                console.warn('[HEURISTIC] Disconnect detected while in party - triggering graceful recovery');
-                window.game.hasLeftGame = true;
-                
-                // Check if we're on the guess submitted screen - if so, auto-advance
-                const currentScreen = document.querySelector('.screen.active')?.id;
-                if (currentScreen === 'gameScreen') {
-                    console.log('[HEURISTIC] On game screen during disconnect - attempting graceful recovery');
-                    
-                    // If we have a pending guess, auto-complete the round
-                    if (window.game.currentGame?.pendingResults) {
-                        console.log('[HEURISTIC] Auto-completing round with pending results');
-                        setTimeout(() => {
-                            if (!this.connected && window.game) {
-                                window.game.autoCompleteRoundOnDisconnect();
-                            }
-                        }, 2000); // Give 2 seconds for potential reconnection
-                    } else {
-                        // Force cleanup after longer delay 
-                        setTimeout(() => {
-                            if (!this.connected && window.game) {
-                                console.warn('[HEURISTIC] Still disconnected after timeout - forcing cleanup');
-                                window.game.handleConnectionFailure();
-                            }
-                        }, 5000);
+                console.warn('[MULTIPLAYER] Disconnect while in party — waiting for auto-reconnect');
+                this._disconnectCleanupTimer = setTimeout(() => {
+                    if (!this.connected && window.game) {
+                        console.warn('[MULTIPLAYER] Still disconnected after 12s — treating as permanent');
+                        window.game.hasLeftGame = true;
+                        window.game.handleConnectionFailure();
                     }
-                } else {
-                    // Force cleanup after short delay to allow for reconnection
-                    setTimeout(() => {
-                        if (!this.connected && window.game) {
-                            console.warn('[HEURISTIC] Still disconnected after timeout - forcing cleanup');
-                            window.game.handleConnectionFailure();
-                        }
-                    }, 5000);
-                }
+                }, 12000);
             }
             
             // Auto-reconnect after delay unless it was intentional
@@ -828,7 +796,15 @@ class MultiplayerManager {
         }
         
         console.log('[MULTIPLAYER] Emitting updateGameType to server:', gameType);
-        this.socket.emit('updateGameType', { gameType });
+        const payload = { gameType };
+        // Send duelHp for duels and teams
+        if (gameType === 'duels' || gameType === 'teams') {
+            const hpInput = document.getElementById('duelHpInput');
+            if (hpInput) {
+                payload.duelHp = Math.max(1, Math.min(10000, parseInt(hpInput.value) || 100));
+            }
+        }
+        this.socket.emit('updateGameType', payload);
         console.log('[MULTIPLAYER] updateGameType emitted successfully');
         return true;
     }
@@ -1047,9 +1023,12 @@ class MultiplayerManager {
             }
         });
 
-        // Clean up on page unload
+        // Clean up on page unload — skip if this is an intentional lobby refresh
         window.addEventListener('beforeunload', () => {
-            // CRITICAL FIX: Properly disconnect socket on page unload
+            if (sessionStorage.getItem('dlg_rejoin_party')) {
+                console.log('[SOCKET-CLEANUP] Intentional lobby refresh — skipping leave');
+                return;
+            }
             console.log('[SOCKET-CLEANUP] Page unloading - disconnecting socket');
 
             // Send leave party signal if in a party
@@ -1201,11 +1180,8 @@ class MultiplayerManager {
 // Initialize global multiplayer manager
 window.multiplayerManager = new MultiplayerManager();
 
-// Auto-connect when page loads (with a small delay to ensure DOM is ready)
-setTimeout(() => {
-    console.log('[MULTIPLAYER] Auto-connecting to server on page load...');
-    window.multiplayerManager.connect();
-}, 500);
+// Connection is initiated by game.js connectToMultiplayer() after callbacks are set up.
+// Do NOT auto-connect here — it races with the game's onConnected callback.
 
 // Export for module systems if needed
 if (typeof module !== 'undefined' && module.exports) {

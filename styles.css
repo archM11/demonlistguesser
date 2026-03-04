@@ -292,14 +292,8 @@ body {
     margin-top: 1.5rem;
 }
 
-.team-controls {
-    display: flex;
-    gap: 1rem;
-    margin-bottom: 1rem;
-}
-
-.add-team-btn, .balance-btn {
-    padding: 0.5rem 1rem;
+.team-join-btn {
+    padding: 0.35rem 0.75rem;
     background: var(--primary);
     color: white;
     border: none;
@@ -307,90 +301,32 @@ body {
     font-weight: 600;
     cursor: pointer;
     transition: background 0.2s;
+    font-size: 0.8rem;
 }
 
-.add-team-btn:hover, .balance-btn:hover {
+.team-join-btn:hover {
     background: var(--primary-dark);
 }
 
-.teams-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
+.team-join-btn.joined {
+    background: var(--success);
+    cursor: default;
 }
 
-.team {
-    background: var(--surface);
-    border-radius: 0.5rem;
-    border: 2px solid var(--surface-light);
-    transition: border-color 0.2s;
-}
-
-.team:hover {
-    border-color: var(--primary);
-}
-
-.team-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.75rem 1rem;
-    background: var(--surface-light);
-    border-radius: 0.5rem 0.5rem 0 0;
-}
-
-.team-header h5 {
-    margin: 0;
-    color: var(--text);
-    font-weight: 600;
-}
-
-.team-count {
-    color: var(--text-dim);
-    font-size: 0.875rem;
-}
-
-.remove-team-btn {
-    background: var(--error);
+.team-swap-btn {
+    padding: 0.15rem 0.4rem;
+    background: rgba(255,255,255,0.15);
     color: white;
-    border: none;
-    border-radius: 0.25rem;
-    width: 24px;
-    height: 24px;
+    border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 0.35rem;
     cursor: pointer;
-    font-size: 1rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.team-members {
-    min-height: 60px;
-    padding: 0.5rem;
-}
-
-.team-members:empty::after {
-    content: 'Drop players here';
-    color: var(--text-dim);
-    font-style: italic;
-    display: block;
-    text-align: center;
-    padding: 1rem;
-}
-
-.team-members .member-item {
-    margin-bottom: 0.25rem;
-    cursor: grab;
-    border-radius: 0.25rem;
+    font-size: 0.75rem;
     transition: background 0.2s;
 }
 
-.team-members .member-item:hover {
-    background: var(--surface-light);
-}
-
-.team-members .member-item:active {
-    cursor: grabbing;
+.team-swap-btn:hover {
+    background: var(--primary);
+    border-color: var(--primary);
 }
 
 /* Duels Management */

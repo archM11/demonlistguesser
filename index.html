@@ -27,7 +27,7 @@
                         <svg class="menu-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
                         Profile
                     </button>
-                    <button class="menu-btn secondary" onclick="window.game.showScreen('leaderboardScreen')">
+                    <button class="menu-btn secondary" onclick="window.game.showDailyLeaderboard()">
                         <svg class="menu-icon" viewBox="0 0 24 24"><path d="M7.5,21H2V9H7.5V21M14.75,3H9.25V21H14.75V3M22,11H16.5V21H22V11Z"/></svg>
                         Leaderboard
                     </button>
@@ -182,24 +182,9 @@
                     
                     <!-- Teams Display -->
                     <div id="teamsVisual" class="teams-visual" style="display: none;">
-                        <h3>Teams</h3>
+                        <h3>Team Duels</h3>
                         <div class="teams-display">
-                            <div class="team-side" data-team="1">
-                                <h4>Team 1</h4>
-                                <div class="team-avatars">
-                                    <div class="player-avatar">
-                                        <div class="avatar"><div style="width: 40px; height: 40px; border-radius: 50%; background: #8b5cf6; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">Y</div></div>
-                                        <span class="player-name">You</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="vs-divider">VS</div>
-                            <div class="team-side" data-team="2">
-                                <h4>Team 2</h4>
-                                <div class="team-avatars">
-                                    <!-- Empty team -->
-                                </div>
-                            </div>
+                            <!-- Populated dynamically by updateTeamsVisual() -->
                         </div>
                     </div>
                     
@@ -326,6 +311,16 @@
                     </div>
                 </div>
 
+                <div class="setup-section" id="duelHpSection" style="display: none;">
+                    <h3>Starting HP</h3>
+                    <div class="timer-options">
+                        <label class="radio-label" style="flex-direction: row; align-items: center; gap: 8px;">
+                            <input type="number" id="duelHpInput" min="1" max="10000" value="100" step="1" style="width: 80px; padding: 4px 8px; border-radius: 4px; border: 1px solid #555; background: #2a2a2a; color: #fff; font-size: 14px;">
+                            <span>HP (1–10000)</span>
+                        </label>
+                    </div>
+                </div>
+
                 <div class="setup-section">
                     <h3>Invite Players</h3>
                     <div class="invite-section">
@@ -345,32 +340,7 @@
                         <!-- Team Management -->
                         <div id="teamManagement" class="team-management" style="display: none;">
                             <h4>Team Setup</h4>
-                            <div class="team-controls">
-                                <button onclick="window.game.addTeam()" class="add-team-btn">+ Add Team</button>
-                                <button onclick="window.game.autoBalance()" class="balance-btn">Auto Balance</button>
-                            </div>
-                            <div class="teams-container">
-                                <div class="team" data-team-id="1">
-                                    <div class="team-header">
-                                        <h5>Team 1</h5>
-                                        <span class="team-count">(1)</span>
-                                    </div>
-                                    <div class="team-members" ondrop="game.dropMember(event)" ondragover="game.allowDrop(event)">
-                                        <div class="member-item" draggable="true" ondragstart="game.dragStart(event)" data-member-id="host">
-                                            <span class="member-name">You (Host)</span>
-                                            <span class="member-status">Ready</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="team" data-team-id="2">
-                                    <div class="team-header">
-                                        <h5>Team 2</h5>
-                                        <span class="team-count">(0)</span>
-                                    </div>
-                                    <div class="team-members" ondrop="game.dropMember(event)" ondragover="game.allowDrop(event)">
-                                    </div>
-                                </div>
-                            </div>
+                            <p style="color: var(--text-dim); font-size: 0.875rem; margin-bottom: 0.5rem;">Click "Join" on a team above to pick your side</p>
                         </div>
 
                     </div>
