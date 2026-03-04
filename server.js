@@ -360,6 +360,18 @@ io.on('connection', (socket) => {
                 party.host = socket.id;
             }
 
+            // Migrate team membership from old socket ID to new
+            if (party.teams) {
+                for (const tid of ['team1', 'team2']) {
+                    if (party.teams[tid]?.members) {
+                        const idx = party.teams[tid].members.indexOf(oldId);
+                        if (idx !== -1) {
+                            party.teams[tid].members[idx] = socket.id;
+                        }
+                    }
+                }
+            }
+
             // Migrate active game state references from old socket ID to new
             if (party.gameState) {
                 if (party.gameState.scores?.[oldId] !== undefined) {
@@ -1453,18 +1465,18 @@ function handleRoundComplete(party) {
         // Players will see round 5 summary and can individually click "View Final Results"
     }
     
-    // Check for duel/team victory condition (only when someone hits exactly 0 HP)
+    // Check for duel/team victory condition (when someone hits 0 HP or below)
     if ((party.gameType === 'duels' || party.gameType === 'teams') && damageResult) {
         const healthValues = Object.values(party.duelHealth);
-        const hasDeadPlayer = healthValues.some(health => health === 0);
-        
+        const hasDeadPlayer = healthValues.some(health => health <= 0);
+
         if (hasDeadPlayer) {
             console.log(`Duel victory condition met in party: ${party.code}`);
             console.log(`Final health values:`, party.duelHealth);
             party.gameState.inProgress = false;
             party.gameState.isComplete = true;
             const winner = Object.keys(party.duelHealth).find(id => party.duelHealth[id] > 0);
-            const loser = Object.keys(party.duelHealth).find(id => party.duelHealth[id] === 0);
+            const loser = Object.keys(party.duelHealth).find(id => party.duelHealth[id] <= 0);
             
             // Delay victory emission to allow damage animation to play
             setTimeout(() => {
