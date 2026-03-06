@@ -12,45 +12,35 @@ app.use(express.json());
 app.use(express.text());
 
 // REFRESH FIX: Handle leave party via HTTP (for sendBeacon)
+// Uses same grace period as socket disconnect to allow page refreshes
 app.post('/api/leave-party', (req, res) => {
     try {
         const data = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
         const { socketId, partyCode } = data;
-        
-        
+
         if (socketId && partyCode) {
             const party = parties.get(partyCode);
             if (party) {
-                // Find and remove the member
-                const memberIndex = party.members.findIndex(m => m.id === socketId);
-                if (memberIndex !== -1) {
-                    const memberName = party.members[memberIndex].name;
-                    party.members.splice(memberIndex, 1);
-                    userParties.delete(socketId);
-                    
-                    
-                    // Handle empty party
-                    if (party.members.length === 0) {
-                        parties.delete(partyCode);
-                    } else {
-                        // Transfer host if needed
-                        if (party.host === socketId && party.members.length > 0) {
-                            party.host = party.members[0].id;
-                        }
-                        
-                        // Notify remaining members
-                        party.members.forEach(member => {
-                            io.to(member.id).emit('partyUpdated', getSafePartyObject(party));
-                            io.to(member.id).emit('playerLeft', { 
-                                playerName: memberName,
-                                party: party
-                            });
-                        });
+                const member = party.members.find(m => m.id === socketId);
+                if (member) {
+                    // Use grace period instead of instant removal — player may be refreshing
+                    if (!member._graceTimer) {
+                        const context = party.gameState?.inProgress ? 'active game' : 'lobby/post-game';
+                        console.log(`[GRACE-HTTP] Player ${member.name} left via beacon during ${context} — waiting 10s for rejoin`);
+                        member._disconnectedAt = Date.now();
+                        member._graceTimer = setTimeout(() => {
+                            if (member._disconnectedAt) {
+                                console.log(`[GRACE-HTTP] Player ${member.name} did not rejoin — removing`);
+                                delete member._disconnectedAt;
+                                delete member._graceTimer;
+                                handlePlayerLeave(socketId);
+                            }
+                        }, 10000);
                     }
                 }
             }
         }
-        
+
         res.status(200).send('OK');
     } catch (err) {
         console.error('[HTTP] Error handling leave-party:', err);
@@ -194,7 +184,8 @@ function getSafePartyObject(party) {
         members: party.members.map(m => ({
             id: m.id,
             name: m.name,
-            socketId: m.socketId
+            socketId: m.socketId,
+            spectator: m.spectator || false
         })),
         gameType: party.gameType,
         settings: party.settings,
@@ -295,7 +286,8 @@ io.on('connection', (socket) => {
             const newMember = {
                 id: socket.id,
                 name: username,
-                avatar: username.charAt(0).toUpperCase() || 'P'
+                avatar: username.charAt(0).toUpperCase() || 'P',
+                spectator: !!party.gameState?.inProgress
             };
             party.members.push(newMember);
 
@@ -324,16 +316,22 @@ io.on('connection', (socket) => {
     // Update game type (FFA, Teams, Duels)
     // Handle rejoining a party after page refresh
     socket.on('rejoinParty', (data) => {
-        const { partyCode, username, wasHost, gameState } = data;
+        const { partyCode, username, wasHost, gameState, oldSocketId } = data;
         const party = parties.get(partyCode);
-        
+
         if (!party) {
             socket.emit('joinError', { message: 'Party expired or not found' });
             return;
         }
-        
-        // Find existing member by name (since socket ID changes on refresh)
-        let existingMember = party.members.find(m => m.name === username);
+
+        // Prefer matching by old socket ID (exact match), fall back to username
+        let existingMember = null;
+        if (oldSocketId) {
+            existingMember = party.members.find(m => m.id === oldSocketId);
+        }
+        if (!existingMember) {
+            existingMember = party.members.find(m => m.name === username);
+        }
         
         if (existingMember) {
             // Cancel grace-period removal timer if pending
@@ -405,7 +403,8 @@ io.on('connection', (socket) => {
             const newMember = {
                 id: socket.id,
                 name: username,
-                avatar: username.charAt(0).toUpperCase() || 'P'
+                avatar: username.charAt(0).toUpperCase() || 'P',
+                spectator: !!party.gameState?.inProgress
             };
             party.members.push(newMember);
             
@@ -583,6 +582,16 @@ io.on('connection', (socket) => {
             party.gameState = {};
         }
 
+        // Persist game settings on the party so they survive between games
+        party.settings = {
+            lists: gameData.lists,
+            mode: gameData.mode,
+            difficulty: gameData.difficulty,
+            hints: gameData.hints,
+            ffaTimer: gameData.ffaTimer,
+            duelHp: gameData.duelHp
+        };
+
         // Initialize comprehensive game state - clear all previous game data
         party.gameState.gameData = gameData;
         party.gameState.currentRound = 1;
@@ -593,8 +602,10 @@ io.on('connection', (socket) => {
         party.gameState.submittedPlayers = new Set(); // Track submitted players to prevent duplicates
         party.gameState.inProgress = true; // Mark game as active
         party.gameState.isComplete = false; // Clear any previous completion flag
-        
-        
+
+        // Clear spectator status so all members participate in the new game
+        party.members.forEach(m => { m.spectator = false; });
+
         // Initialize total scores for all members
         party.members.forEach(member => {
             party.gameState.totalScores[member.id] = 0;
@@ -682,7 +693,7 @@ io.on('connection', (socket) => {
             const currentParty = parties.get(partyCode);
             if (currentParty && currentParty.gameState && currentParty.gameState.inProgress) {
                 const submittedCount = currentParty.gameState.submittedPlayers?.size || 0;
-                const totalMembers = currentParty.members.length;
+                const totalMembers = currentParty.members.filter(m => !m.spectator).length;
                 const playersWhoLeft = currentParty.gameState.playersWhoLeft?.length || 0;
 
                 console.log(`Timer forcing completion - Submitted: ${submittedCount}, Active: ${totalMembers}, Left: ${playersWhoLeft}`);
@@ -793,10 +804,10 @@ io.on('connection', (socket) => {
         // NEW LOGIC: Only wait for CONNECTED players to submit
         // Disconnected players will get auto-submitted score of 0 when timer expires
 
-        // Get list of connected players only
+        // Get list of connected non-spectator players only
         const connectedPlayerIds = party.members.filter(m => {
             const memberSocket = io.sockets.sockets.get(m.id);
-            return memberSocket && memberSocket.connected;
+            return memberSocket && memberSocket.connected && !m.spectator;
         }).map(m => m.id);
 
         console.log(`Connected players: ${connectedPlayerIds.length}/${party.members.length} - IDs: ${connectedPlayerIds.join(', ')}`);
@@ -859,9 +870,9 @@ io.on('connection', (socket) => {
             if (allConnectedSubmitted && connectedPlayerIds.length > 0) {
                 console.log(`All ${connectedPlayerIds.length} connected players submitted. Auto-submitting 0 for disconnected players and completing round...`);
 
-                // Auto-submit for current members who are disconnected
+                // Auto-submit for current members who are disconnected (skip spectators)
                 party.members.forEach(member => {
-                    if (!connectedPlayerIds.includes(member.id) && !submittedPlayers.has(member.id)) {
+                    if (!member.spectator && !connectedPlayerIds.includes(member.id) && !submittedPlayers.has(member.id)) {
                         console.log(`Auto-submitting score 0 for disconnected player: ${member.name} (${member.id})`);
                         party.gameState.scores[member.id] = 0;
                         party.gameState.guesses[member.id] = 999; // No guess
@@ -1046,21 +1057,12 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // CRITICAL FIX: Allow any player to view final results if game is complete
+        // Allow any player to individually view final results if game is complete
         if (party.gameState?.isComplete) {
-            if (party.host === socket.id) {
-                // Host: broadcast to ALL members so non-hosts transition too
-                party.members.forEach(member => {
-                    io.to(member.id).emit('duelViewSummary', {
-                        finalHealth: party.duelHealth ? { ...party.duelHealth } : null
-                    });
-                });
-            } else {
-                // Non-host requesting individually
-                socket.emit('duelViewSummary', {
-                    finalHealth: party.duelHealth ? { ...party.duelHealth } : null
-                });
-            }
+            // Send only to the requesting player — never broadcast to others
+            socket.emit('duelViewSummary', {
+                finalHealth: party.duelHealth ? { ...party.duelHealth } : null
+            });
             return;
         }
         
@@ -1539,7 +1541,7 @@ function handlePlayerLeave(socketId) {
             party.gameState.submittedPlayers.add(socketId);
 
             // Check if all players have now submitted (including the leaving player's auto-submit)
-            const connectedPlayerIds = party.members.filter(m => !m.disconnected).map(m => m.id);
+            const connectedPlayerIds = party.members.filter(m => !m.disconnected && !m.spectator).map(m => m.id);
             const allConnectedSubmitted = connectedPlayerIds.every(id => party.gameState.submittedPlayers.has(id));
 
             if (allConnectedSubmitted && connectedPlayerIds.length > 0) {

@@ -933,7 +933,12 @@ class DemonListGuessr {
         if (ffaWaitingOverlay) {
             ffaWaitingOverlay.remove();
         }
-        
+
+        // Clear stale FFA round data so submission count resets for the new round
+        if (this.currentGame) {
+            this.currentGame.ffaRoundData = {};
+        }
+
         // Force hide result section to ensure clean transition
         const resultSection = document.getElementById('resultSection');
         if (resultSection && resultSection.style.display !== 'none') {
@@ -1066,11 +1071,14 @@ class DemonListGuessr {
         if (this.pendingRejoinCode) {
             const code = this.pendingRejoinCode;
             this.pendingRejoinCode = null;
-            console.log('[REJOIN] Rejoining party after page refresh:', code);
+            const oldSocketId = sessionStorage.getItem('dlg_rejoin_socketId') || '';
+            console.log('[REJOIN] Rejoining party after page refresh:', code, 'oldSocketId:', oldSocketId);
             sessionStorage.removeItem('dlg_rejoin_party');
+            sessionStorage.removeItem('dlg_rejoin_socketId');
             window.multiplayerManager.socket.emit('rejoinParty', {
                 partyCode: code,
-                username: username
+                username: username,
+                oldSocketId: oldSocketId
             });
         } else if (this.pendingJoinCode) {
             const code = this.pendingJoinCode;
@@ -1258,12 +1266,9 @@ class DemonListGuessr {
         
         window.multiplayerManager.onJoinError = (error) => {
             console.error('[JOIN] Failed to join/rejoin party:', error);
-            // Clean URL and sessionStorage so user lands on a clean home screen
             sessionStorage.removeItem('dlg_rejoin_party');
-            const cleanUrl = window.location.origin + window.location.pathname;
-            window.history.replaceState(null, '', cleanUrl);
-            this.showScreen('homeScreen');
-            alert(`Failed to join party: ${error?.message || error}`);
+            // Stay on current screen — just show a notification so user can retry
+            this.showNotification(error?.message || 'Party not found', 'error');
         };
         
         window.multiplayerManager.onNextRoundStarted = (data) => {
@@ -1500,7 +1505,10 @@ class DemonListGuessr {
         
         this.showScreen('partySetupScreen');
         document.getElementById('partyCode').textContent = party.code;
-        
+
+        // Restore previous game settings to UI before applying restrictions
+        this.restoreSettingsFromParty();
+
         // Apply host/non-host restrictions
         this.applyHostRestrictions();
         
@@ -1553,6 +1561,51 @@ class DemonListGuessr {
             // Another updatePartyDisplay call after visual updates
             this.updatePartyDisplay();
         }, 100);
+    }
+
+    restoreSettingsFromParty() {
+        const settings = this.currentParty?.settings;
+        if (!settings) return;
+
+        console.log('[CLIENT] Restoring settings from party:', settings);
+
+        // Lists
+        if (settings.lists) {
+            const mainEl = document.getElementById('partyMainList');
+            const extEl = document.getElementById('partyExtendedList');
+            const legEl = document.getElementById('partyLegacyList');
+            if (mainEl) mainEl.checked = !!settings.lists.mainList;
+            if (extEl) extEl.checked = !!settings.lists.extendedList;
+            if (legEl) legEl.checked = !!settings.lists.legacyList;
+        }
+
+        // Difficulty
+        if (settings.difficulty) {
+            const radio = document.querySelector(`input[name="partyDifficulty"][value="${settings.difficulty}"]`);
+            if (radio) radio.checked = true;
+        }
+
+        // Hints
+        if (settings.hints) {
+            const showCreator = document.getElementById('partyShowCreator');
+            const showVerifier = document.getElementById('partyShowVerifier');
+            const showName = document.getElementById('partyShowName');
+            if (showCreator) showCreator.checked = !!settings.hints.showCreator;
+            if (showVerifier) showVerifier.checked = !!settings.hints.showVerifier;
+            if (showName) showName.checked = !!settings.hints.showName;
+        }
+
+        // FFA Timer
+        if (settings.ffaTimer != null) {
+            const timerRadio = document.querySelector(`input[name="ffaTimer"][value="${settings.ffaTimer}"]`);
+            if (timerRadio) timerRadio.checked = true;
+        }
+
+        // Duel HP
+        if (settings.duelHp != null) {
+            const hpInput = document.getElementById('duelHpInput');
+            if (hpInput) hpInput.value = settings.duelHp;
+        }
     }
 
     applyHostRestrictions() {
@@ -1728,7 +1781,16 @@ class DemonListGuessr {
             this.currentGame.duelHealth = { ...data.finalHealth };
             this.currentGame.pendingHealthUpdate = { ...data.finalHealth };
         }
-        // Transition to game statistics screen
+
+        // FFA: remove reveal overlay and show normal results via endGame()
+        if (this.currentGame?.gameType === 'ffa') {
+            const revealScreen = document.getElementById('ffaRevealScreen');
+            if (revealScreen) revealScreen.remove();
+            this.endGame();
+            return;
+        }
+
+        // Duels/Teams: show duel-specific results
         this.showDuelFinalResults();
     }
 
@@ -2606,9 +2668,10 @@ class DemonListGuessr {
             }
             
             // Build HTML structure using CSS classes (no inline styles)
+            const spectatorLabel = member.spectator ? ' <span style="font-size: 0.75em; color: #9ca3af;">(Spectating)</span>' : '';
             div.innerHTML = `
                 <div class="avatar">${avatarContent}</div>
-                <span class="player-name">${displayName}${isHost ? ' 👑' : ''}</span>
+                <span class="player-name">${displayName}${isHost ? ' 👑' : ''}${spectatorLabel}</span>
             `;
             
             // Let CSS handle all the styling - remove inline style overrides
@@ -3765,7 +3828,11 @@ class DemonListGuessr {
             
             timeLeft--;
             timerDisplay.textContent = `${timeLeft}s`;
-            
+
+            // Sync timer to FFA waiting overlay if visible
+            const ffaTimer = document.getElementById('ffaWaitingTimer');
+            if (ffaTimer) ffaTimer.textContent = `${timeLeft}s`;
+
             if (timeLeft < 0) {
                 clearInterval(this.currentTimer);
                 this.submitGuess(true);
@@ -4238,8 +4305,8 @@ class DemonListGuessr {
             }
         }
         
-        const totalPlayers = this.currentParty.members.length;
-        
+        const totalPlayers = this.currentParty.members.filter(m => !m.spectator).length;
+
         console.log('[WAITING UPDATE] Updating submission count:', {
             submittedCount,
             ffaRoundData: Object.keys(ffaRoundData),
@@ -4325,8 +4392,8 @@ class DemonListGuessr {
             }
         }
         
-        const totalPlayers = this.currentParty.members.length;
-        
+        const totalPlayers = this.currentParty.members.filter(m => !m.spectator).length;
+
         console.log('[WAITING STATE] Submission count:', {
             submittedCount,
             ffaRoundData: Object.keys(ffaRoundData),
@@ -4334,6 +4401,10 @@ class DemonListGuessr {
             totalPlayers
         });
         
+        // Get remaining time from the running timer
+        const timerDisplay = document.getElementById('timerDisplay');
+        const timerText = timerDisplay ? timerDisplay.textContent : '';
+
         waitingOverlay.innerHTML = `
             <div style="font-size: 32px; font-weight: bold; margin-bottom: 20px;">
                 🎯 GUESS SUBMITTED
@@ -4343,6 +4414,9 @@ class DemonListGuessr {
             </div>
             <div class="submission-count" style="font-size: 20px; color: #8b5cf6;">
                 ${submittedCount}/${totalPlayers} players submitted
+            </div>
+            <div id="ffaWaitingTimer" style="font-size: 22px; margin-top: 20px; color: #f59e0b; font-weight: 600;">
+                ${timerText}
             </div>
         `;
         
@@ -6812,16 +6886,22 @@ class DemonListGuessr {
             shouldHideButton: this.currentGame.isParty && !this.isHost
         });
         
-        if (this.currentGame.isParty && !this.isHost) {
-            console.log('🔍 [BUTTON DEBUG] Hiding button for non-host');
+        const isFinalRound = this.currentGame.currentRound >= this.currentGame.totalRounds || this.currentGame.duelWinner;
+        if (this.currentGame.isParty && !this.isHost && !isFinalRound) {
+            console.log('🔍 [BUTTON DEBUG] Hiding button for non-host (not final round)');
             nextBtn.style.display = 'none';
-            
+
             // Show waiting message for non-hosts
             const waitingMsg = document.createElement('div');
             waitingMsg.id = 'waitingForHost';
             waitingMsg.style.cssText = 'text-align: center; padding: 10px; color: #888; font-style: italic;';
             waitingMsg.textContent = 'Waiting for host to advance to next round...';
             nextBtn.parentNode.insertBefore(waitingMsg, nextBtn.nextSibling);
+        } else if (this.currentGame.isParty && !this.isHost && isFinalRound) {
+            // Final round: non-hosts can individually view results
+            console.log('🔍 [BUTTON DEBUG] Showing "View Results" button for non-host on final round');
+            nextBtn.style.display = 'block';
+            nextBtn.textContent = 'View Results';
         } else if (this.currentGame.isParty && this.isHost) {
             console.log('🔍 [BUTTON DEBUG] Showing button for HOST - should be clickable');
             nextBtn.style.display = 'block';
@@ -7280,6 +7360,7 @@ class DemonListGuessr {
             const code = this.currentParty.code;
             console.log('[LOBBY] playAgain — refreshing page for party:', code);
             sessionStorage.setItem('dlg_rejoin_party', code);
+            sessionStorage.setItem('dlg_rejoin_socketId', window.multiplayerManager?.getSocketId() || '');
             window.location.href = '/?party=' + code;
             return;
         }
@@ -7293,6 +7374,7 @@ class DemonListGuessr {
             const code = this.currentParty.code;
             console.log('[LOBBY] backToLobby — refreshing page for party:', code);
             sessionStorage.setItem('dlg_rejoin_party', code);
+            sessionStorage.setItem('dlg_rejoin_socketId', window.multiplayerManager?.getSocketId() || '');
             window.location.href = '/?party=' + code;
             return;
         }
@@ -7774,7 +7856,7 @@ class DemonListGuessr {
         
         window.multiplayerManager.onJoinError = (error) => {
             console.log('[MULTIPLAYER] Join error:', error.message);
-            alert('Failed to join party: ' + error.message);
+            this.showNotification(error?.message || 'Party not found', 'error');
         };
         
         // CRITICAL: Add the missing onPartyUpdated callback for non-host players
