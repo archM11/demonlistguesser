@@ -80,7 +80,8 @@ class MultiplayerManager {
                 console.log(`[MULTIPLAYER] Auto-rejoining party ${this.currentParty.code} as ${username}`);
                 this.socket.emit('rejoinParty', {
                     partyCode: this.currentParty.code,
-                    username: username
+                    username: username,
+                    customAvatar: localStorage.getItem('customAvatar') || null
                 });
             }
 
@@ -457,16 +458,18 @@ class MultiplayerManager {
                     
                     // Create avatar content
                     let avatarContent;
-                    if (isCurrentUser && customAvatar) {
-                        avatarContent = `<img src="${customAvatar}" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover;">`;
+                    const memberAvatar = isCurrentUser ? customAvatar : member.customAvatar;
+                    if (memberAvatar) {
+                        avatarContent = `<img src="${memberAvatar}" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover;">`;
                     } else {
                         const letter = displayName.charAt(0).toUpperCase() || 'P';
                         avatarContent = `<div style="width: 40px; height: 40px; border-radius: 50%; background: #8b5cf6; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 18px;">${letter}</div>`;
                     }
                     
                     playerDiv.innerHTML = `
+                        ${isHost ? '<span class="host-crown">👑</span>' : ''}
                         <div class="avatar">${avatarContent}</div>
-                        <span class="player-name">${displayName}${isHost ? ' 👑' : ''}</span>
+                        <span class="player-name">${displayName}</span>
                     `;
                     
                     ffaPlayersContainer.appendChild(playerDiv);
@@ -744,7 +747,8 @@ class MultiplayerManager {
             setTimeout(() => {
                 if (this.connected) {
                     console.log('[MULTIPLAYER] Reconnected! Creating party for:', username);
-                    this.socket.emit('createParty', { username });
+                    const customAvatar = localStorage.getItem('customAvatar') || null;
+                    this.socket.emit('createParty', { username, customAvatar });
                 } else {
                     console.error('[MULTIPLAYER] Failed to reconnect to server');
                     alert('Failed to connect to server. Please refresh and try again.');
@@ -754,7 +758,8 @@ class MultiplayerManager {
         }
 
         console.log('🔵 [CREATE-PARTY] Emitting createParty event to server...');
-        this.socket.emit('createParty', { username });
+        const customAvatar = localStorage.getItem('customAvatar') || null;
+        this.socket.emit('createParty', { username, customAvatar });
         console.log('🔵 [CREATE-PARTY] Event emitted successfully');
         return true;
     }
@@ -769,7 +774,8 @@ class MultiplayerManager {
             setTimeout(() => {
                 if (this.connected) {
                     console.log('[MULTIPLAYER] Reconnected! Joining party:', code);
-                    this.socket.emit('joinParty', { code: code.toUpperCase(), username });
+                    const customAvatar = localStorage.getItem('customAvatar') || null;
+                    this.socket.emit('joinParty', { code: code.toUpperCase(), username, customAvatar });
                 } else {
                     console.error('[MULTIPLAYER] Failed to reconnect to server');
                     alert('Failed to connect to server. Please refresh and try again.');
@@ -779,7 +785,8 @@ class MultiplayerManager {
         }
         
         console.log('[MULTIPLAYER] Joining party:', code, 'as:', username);
-        this.socket.emit('joinParty', { code: code.toUpperCase(), username });
+        const customAvatar = localStorage.getItem('customAvatar') || null;
+        this.socket.emit('joinParty', { code: code.toUpperCase(), username, customAvatar });
         return true;
     }
 

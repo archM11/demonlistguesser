@@ -3,15 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DemonList Guessr</title>
+    <title>Demon List Guesser</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@700;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div id="app">
+        <!-- Snow & Trees Background -->
+        <div id="snowContainer" class="snow-container"></div>
         <!-- Home Screen -->
         <div id="homeScreen" class="screen active">
             <div class="container">
-                <h1 class="game-title">DemonList Guessr</h1>
+                <h1 class="game-title">Demon List Guesser</h1>
                 <p class="game-subtitle">Guess the demon placement from video alone</p>
                 
                 <div class="menu-grid">
@@ -41,13 +46,6 @@
                     </div>
                 </div>
 
-                <div id="listStatusBanner" class="list-status-banner">
-                    <span class="status-icon">🔄</span>
-                    <div>
-                        <small style="opacity: 0.7;">Demon List Status</small>
-                        <p id="listStatus">Verifying...</p>
-                    </div>
-                </div>
             </div>
         </div>
 
@@ -315,7 +313,7 @@
                     <h3>Starting HP</h3>
                     <div class="timer-options">
                         <label class="radio-label" style="flex-direction: row; align-items: center; gap: 8px;">
-                            <input type="number" id="duelHpInput" min="1" max="10000" value="100" step="1" style="width: 80px; padding: 4px 8px; border-radius: 4px; border: 1px solid #555; background: #2a2a2a; color: #fff; font-size: 14px;">
+                            <input type="number" id="duelHpInput" min="1" max="10000" value="100" step="1" class="no-spinner" style="width: 80px; padding: 4px 8px; border-radius: 4px; border: 1px solid #555; background: #2a2a2a; color: #fff; font-size: 14px;">
                             <span>HP (1–10000)</span>
                         </label>
                     </div>
@@ -326,7 +324,6 @@
                     <div class="invite-section">
                         <div class="invite-methods">
                             <button onclick="window.game.copyPartyCode()" class="invite-btn">📋 Copy Code</button>
-                            <button onclick="window.game.copyPartyLink()" class="invite-btn">🔗 Copy Invite Link</button>
                         </div>
                         
                         <!-- FFA Member List -->
@@ -406,7 +403,7 @@
                 <div id="guessSection" class="guess-section">
                     <h3>Guess the demon's placement:</h3>
                     <div class="guess-input-group">
-                        <input type="number" id="guessInput" min="1" placeholder="Enter placement (1-300+)" class="guess-input">
+                        <input type="number" id="guessInput" min="1" placeholder="Enter placement" class="guess-input">
                         <button onclick="window.game.submitGuess()" class="submit-btn">Submit Guess</button>
                     </div>
                     <div class="list-indicator">
@@ -581,5 +578,24 @@
     <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <script src="multiplayer.js?v=20251014nooverride&t=1728929100"></script>
     <script src="game.js?v=20251014syncfix&t=1728928700"></script>
+    <script>
+    // Generate snowflakes
+    (function() {
+        const container = document.getElementById('snowContainer');
+        if (!container) return;
+        const flakes = ['•', '·', '∗', '⋅'];
+        for (let i = 0; i < 50; i++) {
+            const s = document.createElement('span');
+            s.className = 'snowflake';
+            s.textContent = flakes[Math.floor(Math.random() * flakes.length)];
+            s.style.left = Math.random() * 100 + '%';
+            s.style.fontSize = (Math.random() * 8 + 4) + 'px';
+            s.style.animationDuration = (Math.random() * 8 + 6) + 's';
+            s.style.animationDelay = (Math.random() * 10) + 's';
+            s.style.opacity = Math.random() * 0.6 + 0.2;
+            container.appendChild(s);
+        }
+    })();
+    </script>
 </body>
 </html>

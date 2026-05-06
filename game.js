@@ -331,26 +331,7 @@ class DemonListGuessr {
     }
 
     updateListStatusBanner() {
-        const banner = document.getElementById('listStatusBanner');
-        const statusText = document.getElementById('listStatus');
-        const icon = banner?.querySelector('.status-icon');
-
-        if (!banner || !statusText || !icon) return;
-
-        const demonsWithVideos = this.finalList.filter(d => d.video).length;
-        const apiConnected = this.listMetadata?.apiStatus === 'connected';
-
-        if (apiConnected) {
-            banner.classList.remove('offline');
-            banner.classList.add('verified');
-            icon.textContent = '✅';
-            statusText.textContent = `${demonsWithVideos} playable demons (${this.finalList.length} total) • API connected`;
-        } else {
-            banner.classList.remove('verified');
-            banner.classList.add('offline');
-            icon.textContent = '⚠️';
-            statusText.textContent = `${demonsWithVideos} playable demons (${this.finalList.length} total) • Using cached data`;
-        }
+        // Removed - no longer showing list status on homescreen
     }
 
     extractVideoId(url) {
@@ -1736,7 +1717,7 @@ class DemonListGuessr {
                 messageDiv = document.createElement('div');
                 messageDiv.id = 'nonHostMessage';
                 messageDiv.style.cssText = 'text-align: center; padding: 20px; color: #888; font-style: italic; font-size: 16px; border: 1px solid #444; border-radius: 8px; margin: 20px 0; background: #1a1a1a;';
-                messageDiv.innerHTML = '🎮 You are a party member<br>Host is configuring game settings...';
+                messageDiv.innerHTML = 'You are a party member<br>Host is configuring game settings...';
                 
                 const setupContainer = document.querySelector('#partySetupScreen .container');
                 if (setupContainer) {
@@ -1956,6 +1937,10 @@ class DemonListGuessr {
     handlePartyEnded(data) {
         console.log('🔚 [CLIENT] Party ended:', data);
 
+        // Clean up all game UI (overlays, timers, etc.)
+        this.cleanupGameUI();
+        this.stopCurrentVideo();
+
         // Clear any existing notifications
         const existingNotification = document.getElementById('gameNotification');
         if (existingNotification) {
@@ -1966,6 +1951,7 @@ class DemonListGuessr {
         this.currentParty = null;
         this.isHost = false;
         this.hasLeftGame = false;
+        this.userHasQuit = false;
         this.currentGame = null;
 
         // Clean party code from URL
@@ -2076,13 +2062,13 @@ class DemonListGuessr {
 
         console.log(`📢 [CLIENT] Showing notification: ${message}`);
 
-        return notification; // Return the notification element for fade-out handling
-
         // Auto-hide after 3 seconds
         clearTimeout(this.notificationTimeout);
         this.notificationTimeout = setTimeout(() => {
             notification.classList.remove('show');
         }, 3000);
+
+        return notification;
     }
 
     showMultiplayerOptions() {
@@ -2308,6 +2294,8 @@ class DemonListGuessr {
         
         // Check initial route
         this.handleRouteChange();
+        // Mark that the app has loaded (used to distinguish invite links from refreshes)
+        sessionStorage.setItem('dlg_has_loaded', '1');
     }
     
     handleRouteChange() {
@@ -2323,9 +2311,17 @@ class DemonListGuessr {
                 console.log('[ROUTING] Lobby refresh detected — will rejoin party:', partyCode);
                 this.pendingRejoinCode = partyCode;
             } else {
-                // Invite link from someone else
-                console.log('[ROUTING] Invite link detected — will join party:', partyCode);
-                this.pendingJoinCode = partyCode;
+                // Invite link or stale URL — check if this is a fresh navigation
+                const isInvite = !sessionStorage.getItem('dlg_has_loaded');
+                if (isInvite) {
+                    console.log('[ROUTING] Invite link detected — will join party:', partyCode);
+                    this.pendingJoinCode = partyCode;
+                } else {
+                    // User refreshed with stale party URL — clean it
+                    console.log('[ROUTING] Stale party code in URL — cleaning up');
+                    const cleanUrl = window.location.origin + window.location.pathname;
+                    window.history.replaceState({route: 'hub'}, '', cleanUrl);
+                }
             }
         } else {
             console.log('[ROUTING] Home route');
@@ -2637,7 +2633,7 @@ class DemonListGuessr {
             
             const isCurrentUser = member.id === currentSocketId;
             const isHost = member.id === this.currentParty.host;
-            const displayName = isCurrentUser ? 'You' : (member.name || 'Player');
+            const displayName = member.name || 'Player';
             const letter = (member.name || 'Player').charAt(0).toUpperCase() || 'P';
             
             console.log(`🔥 NUCLEAR: Processing member ${index + 1}:`, {
@@ -2650,28 +2646,19 @@ class DemonListGuessr {
             
             // Create avatar content for CSS styling (no inline styles)
             let avatarContent;
-            if (isCurrentUser) {
-                const userAvatar = localStorage.getItem('userAvatar');
-                if (customAvatar) {
-                    avatarContent = `<img src="${customAvatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">`;
-                } else if (userAvatar) {
-                    avatarContent = userAvatar;
-                } else {
-                    // Just the letter - let CSS handle styling
-                    avatarContent = letter;
-                }
-            } else if (member.avatar) {
-                avatarContent = member.avatar;
+            const memberCustomAvatar = isCurrentUser ? customAvatar : member.customAvatar;
+            if (memberCustomAvatar) {
+                avatarContent = `<img src="${memberCustomAvatar}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">`;
             } else {
-                // Just the letter - let CSS handle styling
                 avatarContent = letter;
             }
             
             // Build HTML structure using CSS classes (no inline styles)
             const spectatorLabel = member.spectator ? ' <span style="font-size: 0.75em; color: #9ca3af;">(Spectating)</span>' : '';
             div.innerHTML = `
+                ${isHost ? '<span class="host-crown">👑</span>' : ''}
                 <div class="avatar">${avatarContent}</div>
-                <span class="player-name">${displayName}${isHost ? ' 👑' : ''}${spectatorLabel}</span>
+                <span class="player-name">${displayName}${spectatorLabel}</span>
             `;
             
             // Let CSS handle all the styling - remove inline style overrides
@@ -2767,8 +2754,9 @@ class DemonListGuessr {
 
                 const isCurrentUser = memberId === currentSocketId;
                 let avatarContent;
-                if (isCurrentUser && customAvatar) {
-                    avatarContent = `<img src="${customAvatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">`;
+                const memberCustomAvatar = isCurrentUser ? customAvatar : member?.customAvatar;
+                if (memberCustomAvatar) {
+                    avatarContent = `<img src="${memberCustomAvatar}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">`;
                 } else {
                     const name = isCurrentUser ? currentUsername : (member?.name || 'Player');
                     avatarContent = name.charAt(0).toUpperCase() || 'P';
@@ -2778,8 +2766,9 @@ class DemonListGuessr {
                 const isHost = memberId === this.currentParty.host;
 
                 playerDiv.innerHTML = `
+                    ${isHost ? '<span class="host-crown">👑</span>' : ''}
                     <div class="avatar">${avatarContent}</div>
-                    <span class="player-name">${displayName}${isHost ? ' 👑' : ''}</span>
+                    <span class="player-name">${displayName}</span>
                 `;
 
                 // Host can swap non-host players to the other team
@@ -2841,7 +2830,7 @@ class DemonListGuessr {
         player1Div.className = 'duel-player';
         let avatarContent;
         if (customAvatar) {
-            avatarContent = `<img src="${customAvatar}" style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover;">`;
+            avatarContent = `<img src="${customAvatar}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">`;
         } else {
             const letter = currentUsername.charAt(0).toUpperCase() || 'Y';
             avatarContent = letter;
@@ -2850,8 +2839,9 @@ class DemonListGuessr {
         const isHost = currentUser?.id === this.currentParty.host;
         player1Div.innerHTML = `
             <div class="player-avatar">
+                ${isHost ? '<span class="host-crown">👑</span>' : ''}
                 <div class="avatar">${avatarContent}</div>
-                <span class="player-name">${currentUsername}${isHost ? ' 👑' : ''}</span>
+                <span class="player-name">${currentUsername}</span>
             </div>
         `;
         
@@ -2869,11 +2859,15 @@ class DemonListGuessr {
             const opponentName = opponent.name || 'Opponent';
             const opponentLetter = opponentName.charAt(0).toUpperCase() || 'P';
             const isOpponentHost = opponent.id === this.currentParty.host;
-            
+            const opponentAvatarContent = opponent.customAvatar
+                ? `<img src="${opponent.customAvatar}" style="width: 60px; height: 60px; border-radius: 50%; object-fit: cover;">`
+                : opponentLetter;
+
             player2Div.innerHTML = `
                 <div class="player-avatar">
-                    <div class="avatar">${opponentLetter}</div>
-                    <span class="player-name">${opponentName}${isOpponentHost ? ' 👑' : ''}</span>
+                    ${isOpponentHost ? '<span class="host-crown">👑</span>' : ''}
+                    <div class="avatar">${opponentAvatarContent}</div>
+                    <span class="player-name">${opponentName}</span>
                 </div>
             `;
         } else {
@@ -3307,9 +3301,8 @@ class DemonListGuessr {
         const teamManagement = document.getElementById('teamManagement');
         const duelsManagement = document.getElementById('duelsManagement');
 
-        if (ffaMembersList) ffaMembersList.style.display = gameType === 'ffa' ? 'block' : 'none';
+        if (ffaMembersList) ffaMembersList.style.display = gameType === 'teams' ? 'none' : 'block';
         if (teamManagement) teamManagement.style.display = gameType === 'teams' ? 'block' : 'none';
-        if (duelsManagement) duelsManagement.style.display = gameType === 'duels' ? 'block' : 'none';
         
         // Show/hide visual displays
         const ffaVisual = document.getElementById('ffaVisual');
@@ -3368,7 +3361,12 @@ class DemonListGuessr {
         if (targetScreen) {
             targetScreen.classList.add('active');
             console.log(`📺 [CLIENT] Successfully switched to screen: ${screenId}`);
-            
+
+            // Update profile stats when showing profile screen
+            if (screenId === 'profileScreen') {
+                this.updateProfileStats();
+            }
+
             // Force update FFA visual when showing party setup screen
             if (screenId === 'partySetupScreen') {
                 // Set up back button event listener every time we show the party screen
@@ -3731,7 +3729,13 @@ class DemonListGuessr {
         
         const listIndicator = document.querySelector('.list-indicator');
         listIndicator.style.display = 'none';
-        
+
+        // Ensure game header is visible (may have been hidden by FFA waiting state)
+        const gameHeader = document.querySelector('.game-header');
+        if (gameHeader) {
+            gameHeader.style.display = '';
+        }
+
         if (this.currentGame.mode === 'blitz') {
             this.startTimer(15);
         } else if (this.currentGame.mode === 'timeattack') {
@@ -4016,14 +4020,21 @@ class DemonListGuessr {
 
             // Only show waiting state if opponent hasn't submitted yet
             const currentUserId = this.getCurrentUserId();
-            const memberIds = this.currentParty.members.map(m => m.id);
-            const otherPlayerId = memberIds.find(id => id !== currentUserId);
+            const duelHealthIds = Object.keys(this.currentGame.duelHealth || {});
+            const otherPlayerId = duelHealthIds.find(id => id !== currentUserId)
+                || this.currentParty.members.map(m => m.id).find(id => id !== currentUserId);
             const opponentScore = this.currentGame.duelState.roundScores[otherPlayerId];
 
+            // Check if opponent has left the game (not in members anymore)
+            const opponentInParty = this.currentParty.members.some(m => m.id === otherPlayerId);
 
             // Check if clash is already ready (both players submitted)
             if (this.currentGame.duelState.clashReady) {
                 // Both already submitted - clash will happen immediately
+            } else if (!opponentInParty) {
+                // Opponent left - show waiting briefly, server will auto-complete
+                console.log('[DUEL] Opponent has left - waiting for server to auto-complete round');
+                this.showDuelWaitingState();
             } else if (opponentScore === undefined) {
                 // We're first to submit - opponent hasn't submitted yet - show waiting state
                 this.showDuelWaitingState();
@@ -4113,6 +4124,7 @@ class DemonListGuessr {
         });
         
         revealScreen.innerHTML = `
+            <button onclick="window.game.quitGame()" style="position: fixed; top: 15px; right: 15px; padding: 8px 16px; background: rgba(239, 68, 68, 0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 1002;">Leave</button>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; max-width: 1200px; width: 100%; align-items: start;">
                 <!-- Video Section -->
                 <div style="background: rgba(0,0,0,0.3); border-radius: 15px; padding: 25px;">
@@ -4406,8 +4418,9 @@ class DemonListGuessr {
         const timerText = timerDisplay ? timerDisplay.textContent : '';
 
         waitingOverlay.innerHTML = `
+            <button onclick="window.game.quitGame()" style="position: fixed; top: 15px; right: 15px; padding: 8px 16px; background: rgba(239, 68, 68, 0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 1002; pointer-events: auto;">Leave</button>
             <div style="font-size: 32px; font-weight: bold; margin-bottom: 20px;">
-                🎯 GUESS SUBMITTED
+                GUESS SUBMITTED
             </div>
             <div style="font-size: 24px; margin-bottom: 30px;">
                 Waiting for other players...
@@ -4477,8 +4490,9 @@ class DemonListGuessr {
         `;
         
         waitingOverlay.innerHTML = `
+            <button onclick="window.game.quitGame()" style="position: fixed; top: 15px; right: 15px; padding: 8px 16px; background: rgba(239, 68, 68, 0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 1002; pointer-events: auto;">Leave</button>
             <div style="font-size: 32px; font-weight: bold; margin-bottom: 20px;">
-                ⚔️ GUESS SUBMITTED
+                GUESS SUBMITTED
             </div>
             <div style="font-size: 24px; margin-bottom: 30px;">
                 Waiting for opponent to submit their guess...
@@ -4525,7 +4539,8 @@ class DemonListGuessr {
         `;
 
         waitingOverlay.innerHTML = `
-            <div style="font-size: 32px; font-weight: bold; margin-bottom: 20px;">⚔️ GUESS SUBMITTED</div>
+            <button onclick="window.game.quitGame()" style="position: fixed; top: 15px; right: 15px; padding: 8px 16px; background: rgba(239, 68, 68, 0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 1002; pointer-events: auto;">Leave</button>
+            <div style="font-size: 32px; font-weight: bold; margin-bottom: 20px;">GUESS SUBMITTED</div>
             <div style="font-size: 24px; margin-bottom: 30px;">Waiting for all players to submit...</div>
             <div class="team-submit-count" style="font-size: 20px; color: #aaa;">${submittedCount}/${allTeamPlayers.length} players guessed</div>
             <div id="duelCountdownDisplay" style="font-size: 48px; font-weight: bold; color: #ffd93d;">--</div>
@@ -4583,10 +4598,11 @@ class DemonListGuessr {
             this.currentGame.duelState.roundGuesses[currentUserId] = playerGuess;
         }
         
-        // Get party member IDs
-        const memberIds = this.currentParty.members.map(m => m.id);
-        const otherPlayerId = memberIds.find(id => id !== currentUserId);
-        
+        // Get opponent ID from duelHealth keys (survives opponent disconnect)
+        const duelHealthIds = Object.keys(this.currentGame.duelHealth || {});
+        const otherPlayerId = duelHealthIds.find(id => id !== currentUserId)
+            || this.currentParty.members.map(m => m.id).find(id => id !== currentUserId);
+
         // Check if opponent has already submitted
         const opponentScore = this.currentGame.duelState.roundScores[otherPlayerId];
         
@@ -4702,7 +4718,10 @@ class DemonListGuessr {
         }
         
         // Get scores - CRITICAL: Store them before they get reset by server
-        const memberIds = this.currentParty.members.map(m => m.id);
+        // Use duelHealth keys to find players (survives opponent disconnect)
+        const currentUserId = this.getCurrentUserId();
+        const duelHealthIds = Object.keys(this.currentGame.duelHealth || {});
+        const memberIds = duelHealthIds.length >= 2 ? duelHealthIds : this.currentParty.members.map(m => m.id);
         const player1Id = memberIds[0];
         const player2Id = memberIds[1];
         const player1Score = this.currentGame.duelState.roundScores[player1Id] || 0;
@@ -4722,8 +4741,7 @@ class DemonListGuessr {
         const scoreDifference = Math.abs(player1Score - player2Score);
         const baseDamage = scoreDifference; // Full difference as damage
         const preliminaryDamage = Math.floor(baseDamage * this.currentGame.duelState.roundMultiplier);
-        
-        const currentUserId = this.getCurrentUserId();
+
         let combatResult = '';
         
         if (player1Score > player2Score) {
@@ -5028,10 +5046,11 @@ class DemonListGuessr {
             return;
         }
         
-        const memberIds = this.currentParty.members.map(m => m.id);
+        const duelHealthIds = Object.keys(this.currentGame.duelHealth || {});
+        const memberIds = duelHealthIds.length >= 2 ? duelHealthIds : this.currentParty.members.map(m => m.id);
         const player1Name = this.currentParty.members.find(m => m.id === memberIds[0])?.name || 'Player 1';
-        const player2Name = this.currentParty.members.find(m => m.id === memberIds[1])?.name || 'Player 2';
-        
+        const player2Name = this.currentParty.members.find(m => m.id === memberIds[1])?.name || 'Opponent';
+
         const currentUserId = this.getCurrentUserId();
         const isPlayer1 = currentUserId === memberIds[0];
         
@@ -5184,8 +5203,9 @@ class DemonListGuessr {
         this.updateHealthAtGameSummary();
         
         // CRITICAL FIX: Convert scores from player ID perspective to user perspective
-        const memberIds = this.currentParty.members.map(m => m.id);
         const currentUserId = this.getCurrentUserId();
+        const duelHealthIds = Object.keys(this.currentGame.duelHealth || {});
+        const memberIds = duelHealthIds.length >= 2 ? duelHealthIds : this.currentParty.members.map(m => m.id);
         const player1Id = memberIds[0];
         const player2Id = memberIds[1];
         const isPlayer1 = currentUserId === player1Id;
@@ -6437,11 +6457,11 @@ class DemonListGuessr {
             myLabel = 'Your Team';
             opponentLabel = 'Enemy Team';
         } else {
-            const memberIds = this.currentParty.members.map(m => m.id);
             const currentUserId = this.getCurrentUserId();
-            const opponentId = memberIds.find(id => id !== currentUserId);
-            myHealth = this.currentGame.duelHealth[currentUserId] || 0;
-            opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
+            const healthIds = Object.keys(this.currentGame.duelHealth);
+            const opponentId = healthIds.find(id => id !== currentUserId);
+            myHealth = this.currentGame.duelHealth[currentUserId] ?? 0;
+            opponentHealth = this.currentGame.duelHealth[opponentId] ?? 0;
         }
 
         // Map to UI elements: player1 = "You", player2 = "Opponent"
@@ -6701,11 +6721,11 @@ class DemonListGuessr {
             myHealth = this.currentGame.duelHealth[myTeam] ?? 0;
             opponentHealth = this.currentGame.duelHealth[enemyTeam] ?? 0;
         } else {
-            const memberIds = this.currentParty.members.map(m => m.id);
             const currentUserId = this.getCurrentUserId();
-            const opponentId = memberIds.find(id => id !== currentUserId);
-            myHealth = this.currentGame.duelHealth[currentUserId] || 0;
-            opponentHealth = this.currentGame.duelHealth[opponentId] || 0;
+            const healthIds = Object.keys(this.currentGame.duelHealth);
+            const opponentId = healthIds.find(id => id !== currentUserId);
+            myHealth = this.currentGame.duelHealth[currentUserId] ?? 0;
+            opponentHealth = this.currentGame.duelHealth[opponentId] ?? 0;
         }
 
         const myPct = (myHealth / maxHp) * 100;
@@ -7121,11 +7141,19 @@ class DemonListGuessr {
         if (existingBtn) {
             existingBtn.remove();
         }
+
+        // Reset Back to Lobby button visibility (may have been hidden by daily challenge)
+        const lobbyBtn = document.querySelector('#resultsScreen .results-buttons > .play-again-btn');
+        if (lobbyBtn) lobbyBtn.style.display = '';
         
         if (this.currentGame.mode === 'daily') {
             this.saveDailyScore(finalScore);
             this.updateDailyChallengeBanner(true); // Mark as completed
-            
+
+            // Hide "Back to Lobby" button for daily challenge
+            const backToLobbyBtn = document.querySelector('#resultsScreen .play-again-btn');
+            if (backToLobbyBtn) backToLobbyBtn.style.display = 'none';
+
             // Add button to view daily leaderboard only for daily games
             const resultsButtons = document.querySelector('#resultsScreen .results-buttons');
             if (resultsButtons) {
@@ -7289,7 +7317,7 @@ class DemonListGuessr {
                 winMessage = 'Draw';
             } else {
                 // Both still have health - shouldn't happen at game end
-                winMessage = '⚔️ Battle continues...';
+                winMessage = 'Battle continues...';
             }
             
             roundSummary.innerHTML = `
@@ -7677,13 +7705,13 @@ class DemonListGuessr {
 
     updateProfileStats() {
         document.getElementById('gamesPlayed').textContent = this.stats.gamesPlayed;
-        document.getElementById('avgScore').textContent = 
-            this.stats.gamesPlayed > 0 ? 
+        document.getElementById('avgScore').textContent =
+            this.stats.gamesPlayed > 0 ?
             Math.round(this.stats.totalScore / this.stats.gamesPlayed) : 0;
-        document.getElementById('bestScore').textContent = 
+        document.getElementById('bestScore').textContent =
             localStorage.getItem('bestScore') || 0;
-        
-        if (this.currentGame.score > (localStorage.getItem('bestScore') || 0)) {
+
+        if (this.currentGame && this.currentGame.score > (parseInt(localStorage.getItem('bestScore')) || 0)) {
             localStorage.setItem('bestScore', this.currentGame.score);
         }
     }
@@ -7976,9 +8004,10 @@ class DemonListGuessr {
     }
     
     showJoinParty() {
+        document.getElementById('joinPartyCode').value = '';
         this.showScreen('joinPartyScreen');
     }
-    
+
     joinParty() {
         if (!window.multiplayerManager) {
             alert('Multiplayer system not initialized. Please refresh the page.');
