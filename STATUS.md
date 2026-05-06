@@ -226,11 +226,14 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 - Duplicate method definitions in `game.js` (two `handlePartyEnded`, two `showJoinParty`, etc.) -- second overrides first
 - Debug logging throughout codebase needs cleanup
 - Untracked utility scripts in repo root (fetch_*.py, merge_*.py, etc.)
+- Teams mode has not been bugtested yet
+
+### Up Next
+- **Bugtest Teams mode** -- full playthrough testing for team creation, joining, gameplay, scoring, and end-game flow
 
 ### Future Goals
 - Clean up debug logging throughout codebase
 - Remove dead code (duplicate methods, unused branches)
-- Stabilize FFA and Teams modes
 - Production deployment (Railway.app support exists)
 - Better error handling and resilience (server should not crash on malformed events)
 - Potential database integration for persistent stats/leaderboards
