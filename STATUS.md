@@ -214,22 +214,73 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 
 ---
 
+## What We Fixed (Session 4 -- 2026-05-06)
+
+### Feature: Full Spectator System
+**Change:** Players can now spectate party games. The host can toggle any player (including themselves in FFA/Teams) between Participating and Spectating via the Party Members list.
+**Behavior:**
+- Spectators stay on the party lobby during games with a "Live Game" panel showing real-time scores (FFA) or health bars (duels/teams)
+- Spectators are blocked from all game UI (game screen, results screen, FFA reveal, duel clash, etc.) via `wasSpectator` flag that persists for the entire game
+- Spectators are removed from team rosters and can't join teams
+- For duels with 3+ players: host always plays, one random opponent is auto-selected, rest spectate. Host can swap who plays. Only 1 non-host can be active.
+- Spectators get "Game has ended" notification when the game finishes. Their spectator status persists between games (host decides who plays next)
+- Mid-game joiners auto-spectate
+
+### Feature: Improved Scoring System
+**Change:** Rebalanced the bell-curve scoring:
+- Main list (1-75): stricter, 50 pts at 8 off (was 15)
+- Extended list (76-150): stricter, 50 pts at 15 off (was 30)
+- Legacy list (151+): much more lenient, 50 pts at 150 off (was 50)
+- Timeout guess changed from 999 to 10000, displayed as "No guess"
+
+### Feature: Profile Stats
+**Change:** Profile now shows: Games Played, Best Score, Total Score, Perfect Guesses, Duel/Team Win Rate, FFA Win Rate. Win detection is real (checks health/scores, not random).
+
+### Feature: Leaderboard Tabs
+**Change:** Leaderboard now has Daily, FFA Wins, and Duel/Team Wins tabs. Wins are submitted to the server and aggregated per player.
+
+### Feature: Individual "View Final Results" Button
+**Change:** In duels/teams, when a player dies (game over), ALL players get their own "View Final Results" button instead of non-hosts seeing "Waiting for host..."
+
+### Bug Fix: FFA Double Submission
+**Problem:** When the FFA timer expired after a player already submitted, `submitGuess(true)` fired again and overwrote the real guess with 10000/0 pts.
+**Fix:** Added `hasSubmittedThisRound` flag to prevent double submission in FFA.
+
+### Bug Fix: Timer Showing -1
+**Problem:** Timer display showed -1s briefly before auto-submitting.
+**Fix:** Timer now shows 0s and submits immediately when reaching 0.
+
+### Bug Fix: Multiplier Increment
+**Change:** Damage multiplier now increases by 0.5x every 3 rounds (was 0.2x every round). Stays at 1.0x for rounds 1-3.
+
+### Bug Fix: Host Not Shown in Party Members
+**Problem:** When the host was alone in a party, the Party Members list was empty.
+**Fix:** Added `updatePartyDisplay()` call to `handlePartyCreated`.
+
+### UI Improvements
+- Replaced all browser `alert()` popups with in-game notifications
+- Video stops playing at round summary (not on guess submit)
+- Social links (Discord, YouTube) added to home screen bottom-right
+- Host can set themselves as spectator in FFA/Teams (not duels)
+- Party Members list visible for all game types (was hidden for teams)
+
+---
+
 ## What We Want to Achieve
 
 ### Immediate Goals
-- Stable, bug-free duel experience from start to finish (lobby -> game -> results -> lobby)
-- Both players see correct health, damage, scores, and round data at all times
-- Clean transitions between all screens for both host and non-host
-- No server crashes during normal gameplay flow
+- Stable, bug-free experience across all game modes
+- Spectator system fully tested in all modes
+- Clean transitions between all screens for all player types
 
 ### Known Remaining Issues
 - Duplicate method definitions in `game.js` (two `handlePartyEnded`, two `showJoinParty`, etc.) -- second overrides first
 - Debug logging throughout codebase needs cleanup
 - Untracked utility scripts in repo root (fetch_*.py, merge_*.py, etc.)
-- Teams mode has not been bugtested yet
 
 ### Up Next
-- **Bugtest Teams mode** -- full playthrough testing for team creation, joining, gameplay, scoring, and end-game flow
+- **Bugtest Teams mode** -- full playthrough testing with spectators
+- **Bugtest Spectator system** -- edge cases with joins/leaves/swaps during games
 
 ### Future Goals
 - Clean up debug logging throughout codebase

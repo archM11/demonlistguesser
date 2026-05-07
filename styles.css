@@ -85,6 +85,94 @@ body {
     to { opacity: 1; }
 }
 
+/* Spectator Screen */
+.spectator-container {
+    max-width: 600px;
+    text-align: center;
+}
+
+.spectator-banner {
+    font-size: 1.5rem;
+    font-weight: 900;
+    letter-spacing: 0.2em;
+    color: #f59e0b;
+    padding: 0.75rem;
+    border: 2px solid rgba(245, 158, 11, 0.4);
+    border-radius: 8px;
+    background: rgba(245, 158, 11, 0.1);
+    margin-bottom: 1.5rem;
+}
+
+.spectator-content {
+    background: var(--surface);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+    min-height: 200px;
+}
+
+.spectator-content .spectator-player {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0;
+    background: rgba(255,255,255,0.05);
+    border-radius: 8px;
+}
+
+.spectator-content .spectator-player.submitted {
+    border-left: 3px solid #4CAF50;
+}
+
+.spectator-content .spectator-health-bar {
+    width: 100%;
+    height: 12px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-top: 0.25rem;
+}
+
+.spectator-content .spectator-health-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.5s ease;
+}
+
+.spectator-info {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+
+.social-links {
+    position: fixed;
+    bottom: 12px;
+    right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    opacity: 0.5;
+    z-index: 2;
+}
+
+.social-links span,
+.social-links a {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-dim);
+    text-decoration: none;
+}
+
+.social-links span:hover,
+.social-links a:hover {
+    color: var(--text);
+    opacity: 1;
+}
+
 /* Animated Snowflakes */
 .snow-container {
     position: fixed;

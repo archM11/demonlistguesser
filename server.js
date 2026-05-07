@@ -72,13 +72,14 @@ function saveLeaderboard() {
 }
 
 app.post('/api/leaderboard/submit', (req, res) => {
-    const { name, score } = req.body;
+    const { name, score, category } = req.body;
     if (!name || typeof score !== 'number') {
         return res.status(400).json({ error: 'name (string) and score (number) required' });
     }
     const entry = {
         name: String(name).slice(0, 30),
         score: Math.round(score),
+        category: category || 'daily',
         date: new Date().toDateString(),
         time: Date.now()
     };
@@ -89,37 +90,36 @@ app.post('/api/leaderboard/submit', (req, res) => {
 
 app.get('/api/leaderboard', (req, res) => {
     const type = req.query.type || 'daily';
-    const today = new Date();
     let results = [];
 
     if (type === 'daily') {
-        const todayStr = today.toDateString();
+        const todayStr = new Date().toDateString();
         results = leaderboardScores
-            .filter(s => s.date === todayStr)
+            .filter(s => s.date === todayStr && (!s.category || s.category === 'daily'))
             .sort((a, b) => b.score - a.score)
             .slice(0, 50);
-    } else if (type === 'weekly') {
-        const weekAgo = new Date(today);
-        weekAgo.setDate(weekAgo.getDate() - 7);
-        const weekScores = leaderboardScores.filter(s => new Date(s.date) >= weekAgo);
-        // Best score per player per day, then sort
-        const bestByPlayer = new Map();
-        for (const s of weekScores) {
-            const existing = bestByPlayer.get(s.name);
-            if (!existing || s.score > existing.score) {
-                bestByPlayer.set(s.name, s);
+    } else if (type === 'ffaWins' || type === 'duelWins') {
+        // Aggregate total wins per player for this category
+        const winsByPlayer = new Map();
+        for (const s of leaderboardScores) {
+            if (s.category === type) {
+                const existing = winsByPlayer.get(s.name) || 0;
+                winsByPlayer.set(s.name, existing + s.score);
             }
         }
-        results = [...bestByPlayer.values()]
+        results = [...winsByPlayer.entries()]
+            .map(([name, score]) => ({ name, score }))
             .sort((a, b) => b.score - a.score)
             .slice(0, 50);
     } else {
         // alltime — best score per player ever
         const bestByPlayer = new Map();
         for (const s of leaderboardScores) {
-            const existing = bestByPlayer.get(s.name);
-            if (!existing || s.score > existing.score) {
-                bestByPlayer.set(s.name, s);
+            if (!s.category || s.category === 'daily') {
+                const existing = bestByPlayer.get(s.name);
+                if (!existing || s.score > existing.score) {
+                    bestByPlayer.set(s.name, s);
+                }
             }
         }
         results = [...bestByPlayer.values()]
@@ -215,6 +215,33 @@ function generatePartyCode() {
     return result;
 }
 
+// Auto-assign spectators for duels when there are 3+ members
+// For other game types, preserve manual host assignments
+function autoAssignDuelSpectators(party) {
+    if (party.gameType !== 'duels') {
+        // FFA/Teams: don't touch spectator flags — host manages them manually
+        return;
+    }
+
+    if (party.members.length <= 2) {
+        // 2 or fewer in duels — everyone plays
+        party.members.forEach(m => { m.spectator = false; });
+        return;
+    }
+
+    // Host always plays. Pick one random non-host opponent. Rest spectate.
+    // But preserve any manual host assignments — only auto-assign if no one is set yet
+    const nonHost = party.members.filter(m => m.id !== party.host);
+    const currentActive = nonHost.filter(m => !m.spectator);
+
+    // If exactly 1 non-host is active, assignment is already correct
+    if (currentActive.length === 1) return;
+
+    // Otherwise, pick a random opponent
+    const opponentIndex = Math.floor(Math.random() * nonHost.length);
+    nonHost.forEach((m, i) => { m.spectator = (i !== opponentIndex); });
+}
+
 // Ensure unique party code
 function generateUniquePartyCode() {
     let code;
@@ -301,10 +328,25 @@ io.on('connection', (socket) => {
         }
 
         userParties.set(socket.id, code);
-        
+
+        // Auto-assign spectators if duels with 3+ players
+        if (!party.gameState?.inProgress) {
+            autoAssignDuelSpectators(party);
+        }
+
         console.log(`${username} joined party: ${code} (${party.members.length}/8 players)`);
         socket.emit('joinSuccess', getSafePartyObject(party));
-        
+
+        // If game is in progress, send game state so spectator can see scores/health
+        if (party.gameState?.inProgress) {
+            socket.emit('gameStarted', {
+                party: getSafePartyObject(party),
+                gameData: party.settings || {},
+                gameState: party.gameState,
+                round: party.gameState.currentRound
+            });
+        }
+
         // SOLUTION 1: Force complete party refresh when party size changes (member joins)
         setTimeout(() => {
             party.members.forEach(member => {
@@ -423,20 +465,11 @@ io.on('connection', (socket) => {
         userParties.set(socket.id, partyCode);
         socket.join(partyCode);
 
-        // If a finished game exists, reset to clean lobby state so players
-        // land back in the party setup screen instead of a stale game.
+        // If a finished game exists, preserve isComplete so other players can still view results
         if (party.gameState?.isComplete && !party.gameState?.inProgress) {
-            console.log(`[REJOIN] Game finished — resetting state for party ${partyCode}`);
-            party.gameState = {
-                gameData: null,
-                scores: {},
-                guesses: {},
-                currentRound: 0,
-                roundScores: {},
-                totalScores: {},
-                submittedPlayers: new Set()
-            };
-            party.duelHealth = {};
+            console.log(`[REJOIN] Game finished — keeping isComplete for other players`);
+            party.gameState.inProgress = false;
+            // Don't reset totalScores or isComplete — other players may still need them
             party.duelState = {
                 clashReady: false,
                 roundScores: {},
@@ -462,6 +495,50 @@ io.on('connection', (socket) => {
         socket.to(partyCode).emit('partyUpdated', getSafePartyObject(party));
     });
     
+    // Toggle spectator status (host only)
+    socket.on('toggleSpectator', (data) => {
+        const partyCode = userParties.get(socket.id);
+        const party = parties.get(partyCode);
+        if (!party || party.host !== socket.id) return;
+
+        const member = party.members.find(m => m.id === data.playerId);
+        if (!member) return;
+
+        // Host can't spectate in duels (need exactly 2 active players)
+        if (party.gameType === 'duels' && member.id === party.host && !member.spectator) return;
+
+        // For duels: only allow 1 non-host active player at a time
+        if (party.gameType === 'duels' && member.spectator) {
+            // Activating this player — spectate all other non-host players first
+            party.members.forEach(m => {
+                if (m.id !== party.host && m.id !== member.id) {
+                    m.spectator = true;
+                }
+            });
+        }
+
+        member.spectator = !member.spectator;
+        console.log(`[SPECTATOR] ${member.name} is now ${member.spectator ? 'spectating' : 'active'} in party ${partyCode}`);
+
+        // Remove from team rosters when set to spectator
+        if (member.spectator && party.teams) {
+            for (const tid of ['team1', 'team2']) {
+                if (party.teams[tid]) {
+                    party.teams[tid].members = party.teams[tid].members.filter(id => id !== member.id);
+                }
+            }
+        }
+
+        // Broadcast updated party to all members
+        party.members.forEach(m => {
+            io.to(m.id).emit('forcePartyRefresh', {
+                party: getSafePartyObject(party),
+                forceUpdate: true,
+                reason: 'spectatorToggle'
+            });
+        });
+    });
+
     // Join a team (for Teams mode)
     socket.on('joinTeam', (data) => {
         const partyCode = userParties.get(socket.id);
@@ -471,6 +548,10 @@ io.on('connection', (socket) => {
 
         const { teamId } = data;
         if (teamId !== 'team1' && teamId !== 'team2') return;
+
+        // Block spectators from joining teams
+        const member = party.members.find(m => m.id === socket.id);
+        if (member?.spectator) return;
 
         // Remove from old team
         for (const tid of ['team1', 'team2']) {
@@ -561,8 +642,11 @@ io.on('connection', (socket) => {
             };
         }
 
+        // Auto-assign spectators for duels with 3+ players
+        autoAssignDuelSpectators(party);
+
         console.log(`Game type changed to: ${data.gameType} in party: ${partyCode}`);
-        
+
         // SOLUTION 1: Force complete party refresh for ALL members
         party.members.forEach(member => {
             io.to(member.id).emit('forcePartyRefresh', {
@@ -609,12 +693,16 @@ io.on('connection', (socket) => {
         party.gameState.inProgress = true; // Mark game as active
         party.gameState.isComplete = false; // Clear any previous completion flag
 
-        // Clear spectator status so all members participate in the new game
-        party.members.forEach(m => { m.spectator = false; });
+        // Finalize spectator assignments (preserves host's manual changes, auto-assigns if needed)
+        autoAssignDuelSpectators(party);
+        console.log(`[SPECTATOR] Game start: active=${party.members.filter(m => !m.spectator).map(m => m.name).join(', ')}, spectating=${party.members.filter(m => m.spectator).map(m => m.name).join(', ') || 'none'}`);
 
-        // Initialize total scores for all members
+
+        // Initialize total scores for active players only
         party.members.forEach(member => {
-            party.gameState.totalScores[member.id] = 0;
+            if (!member.spectator) {
+                party.gameState.totalScores[member.id] = 0;
+            }
         });
         
         // Clear any leftover duel-specific state first, BUT PRESERVE HEALTH
@@ -664,12 +752,11 @@ io.on('connection', (socket) => {
             };
 
             // Initialize duel health ONLY if it doesn't exist or this is the very first game
+            const activePlayers = party.members.filter(m => !m.spectator);
             if (!preservedHealth || Object.keys(preservedHealth).length === 0) {
-                console.log(`Initializing fresh duel health with ${duelHp} HP`);
-                party.duelHealth = {
-                    [party.members[0].id]: duelHp,
-                    [party.members[1].id]: duelHp
-                };
+                console.log(`Initializing fresh duel health with ${duelHp} HP for ${activePlayers.length} players`);
+                party.duelHealth = {};
+                activePlayers.forEach(m => { party.duelHealth[m.id] = duelHp; });
             } else {
                 console.log('Preserving existing duel health:', preservedHealth);
                 party.duelHealth = { ...preservedHealth }; // Create a new object from preserved values
@@ -704,7 +791,7 @@ io.on('connection', (socket) => {
                     if (!member.spectator && !currentParty.gameState.submittedPlayers.has(member.id)) {
                         console.log(`⏰ [TIMER] Adding default score 0 for non-submitting player: ${member.name}`);
                         currentParty.gameState.scores[member.id] = 0;
-                        currentParty.gameState.guesses[member.id] = 999;
+                        currentParty.gameState.guesses[member.id] = 10000;
                         currentParty.gameState.submittedPlayers.add(member.id);
                     }
                 });
@@ -820,7 +907,7 @@ io.on('connection', (socket) => {
                     if (!submittedPlayers.has(playerId)) {
                         console.log(`🎮 [TEAMS] Auto-submitting score 0 for non-submitting player: ${playerId}`);
                         party.gameState.scores[playerId] = 0;
-                        party.gameState.guesses[playerId] = 999;
+                        party.gameState.guesses[playerId] = 10000;
                         party.gameState.submittedPlayers.add(playerId);
                     }
                 });
@@ -844,7 +931,7 @@ io.on('connection', (socket) => {
                     if (!submittedPlayers.has(playerId)) {
                         console.log(`🎮 [DUEL] Auto-submitting score 0 for non-submitting player: ${playerId}`);
                         party.gameState.scores[playerId] = 0;
-                        party.gameState.guesses[playerId] = 999;
+                        party.gameState.guesses[playerId] = 10000;
                         party.gameState.submittedPlayers.add(playerId);
                     }
                 });
@@ -863,7 +950,7 @@ io.on('connection', (socket) => {
                     if (!member.spectator && !connectedPlayerIds.includes(member.id) && !submittedPlayers.has(member.id)) {
                         console.log(`Auto-submitting score 0 for disconnected player: ${member.name} (${member.id})`);
                         party.gameState.scores[member.id] = 0;
-                        party.gameState.guesses[member.id] = 999; // No guess
+                        party.gameState.guesses[member.id] = 10000; // No guess
                         party.gameState.submittedPlayers.add(member.id);
                     }
                 });
@@ -965,12 +1052,10 @@ io.on('connection', (socket) => {
             party.duelState.roundScores = {};
             party.duelState.hasServerHealth = false;
             
-            // Increase multiplier for next round (but not after the first round)
-            if (party.gameState.currentRound > 1) {
-                party.duelState.roundMultiplier = Math.round((party.duelState.roundMultiplier + 0.2) * 10) / 10;
+            // Increase multiplier by 0.5x every 3 rounds (starts at 1.0x, first increase at round 4)
+            if (party.gameState.currentRound > 3 && (party.gameState.currentRound - 1) % 3 === 0) {
+                party.duelState.roundMultiplier = Math.round((party.duelState.roundMultiplier + 0.5) * 10) / 10;
                 console.log(`Increased damage multiplier to ${party.duelState.roundMultiplier.toFixed(1)}x for round ${party.gameState.currentRound}`);
-            } else {
-                console.log(`Round ${party.gameState.currentRound} - multiplier remains at ${party.duelState.roundMultiplier.toFixed(1)}x`);
             }
             
         }
@@ -1023,7 +1108,7 @@ io.on('connection', (socket) => {
                         if (!member.spectator && !currentParty.gameState.submittedPlayers.has(member.id)) {
                             console.log(`⏰ [ROUND TIMER] Adding default score 0 for non-submitting player: ${member.name}`);
                             currentParty.gameState.scores[member.id] = 0;
-                            currentParty.gameState.guesses[member.id] = 999;
+                            currentParty.gameState.guesses[member.id] = 10000;
                             currentParty.gameState.submittedPlayers.add(member.id);
                         }
                     });
@@ -1447,11 +1532,19 @@ function handleRoundComplete(party) {
     // CRITICAL FIX: Mark game as completed after round 5, but don't immediately send gameFinished
     // Let players view the round 5 summary first, then individually click "View Final Results"
     if (party.gameType === 'ffa' && party.gameState.currentRound >= 5) {
-        
+
         // Mark game as complete but don't send gameFinished yet
         party.gameState.isComplete = true;
         party.gameState.inProgress = false;
-        
+
+        // Notify spectators the game ended (keep their spectator status)
+        const spectators = party.members.filter(m => m.spectator);
+        if (spectators.length > 0) {
+            spectators.forEach(m => {
+                io.to(m.id).emit('gameFinished', { finalScores: party.gameState.totalScores, gameType: party.gameType });
+            });
+        }
+
         // Don't return early - let the round complete event be sent normally
         // Players will see round 5 summary and can individually click "View Final Results"
     }
@@ -1466,6 +1559,14 @@ function handleRoundComplete(party) {
             console.log(`Final health values:`, party.duelHealth);
             party.gameState.inProgress = false;
             party.gameState.isComplete = true;
+
+            // Notify spectators the game ended (keep their spectator status)
+            const spectators = party.members.filter(m => m.spectator);
+            if (spectators.length > 0) {
+                spectators.forEach(m => {
+                    io.to(m.id).emit('gameFinished', { finalScores: party.gameState.totalScores, gameType: party.gameType });
+                });
+            }
             const winner = Object.keys(party.duelHealth).find(id => party.duelHealth[id] > 0);
             const loser = Object.keys(party.duelHealth).find(id => party.duelHealth[id] <= 0);
             
@@ -1510,8 +1611,8 @@ function handlePlayerLeave(socketId) {
         }
     }
 
-    // For duels: if a player leaves mid-game, end the party immediately
-    if (party.gameType === 'duels' && party.gameState?.inProgress) {
+    // For duels: if an active (non-spectator) player leaves mid-game, end the party immediately
+    if (party.gameType === 'duels' && party.gameState?.inProgress && !leftMember?.spectator) {
         console.log(`🎮 [DUEL LEAVE] Player left during active duel - ending party`);
 
         party.gameState.inProgress = false;
@@ -1553,7 +1654,7 @@ function handlePlayerLeave(socketId) {
         if (!party.gameState.submittedPlayers.has(socketId)) {
             console.log(`🎮 [TEAMS LEAVE] Auto-submitting score 0 for leaving player: ${memberName}`);
             party.gameState.scores[socketId] = 0;
-            party.gameState.guesses[socketId] = 999;
+            party.gameState.guesses[socketId] = 10000;
             party.gameState.submittedPlayers.add(socketId);
 
             // Check if all players have now submitted (including the leaving player's auto-submit)
@@ -1659,8 +1760,8 @@ function handlePlayerLeave(socketId) {
             return;
         }
 
-        // In 1v1 duels, if either player leaves, end the party
-        if (party.gameType === 'duels') {
+        // In 1v1 duels, if an active (non-spectator) player leaves, end the party
+        if (party.gameType === 'duels' && !leftMember?.spectator) {
             console.log(`Player left 1v1 duel in party ${partyCode} - ending party`);
 
             party.members.forEach(member => {

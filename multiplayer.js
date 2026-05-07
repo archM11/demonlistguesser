@@ -447,8 +447,8 @@ class MultiplayerManager {
                 const currentSocketId = this.socket.id;
                 const customAvatar = localStorage.getItem('customAvatar');
                 
-                // Rebuild each player
-                data.members.forEach((member, index) => {
+                // Rebuild each player (skip spectators)
+                data.members.filter(m => !m.spectator).forEach((member, index) => {
                     const playerDiv = document.createElement('div');
                     playerDiv.className = 'player-avatar';
                     
@@ -714,7 +714,7 @@ class MultiplayerManager {
             this.clearLocalStorage();
             
             // Notify user
-            alert(`${data.reason}\n\nYou will be returned to the main menu.`);
+            if (window.game) window.game.showNotification(data.reason || 'Kicked from party', 'error');
             
             // Return to main menu
             if (window.game) {
@@ -751,7 +751,7 @@ class MultiplayerManager {
                     this.socket.emit('createParty', { username, customAvatar });
                 } else {
                     console.error('[MULTIPLAYER] Failed to reconnect to server');
-                    alert('Failed to connect to server. Please refresh and try again.');
+                    if (window.game) window.game.showNotification('Failed to connect to server. Please refresh.', 'error');
                 }
             }, 500);
             return true;
@@ -778,7 +778,7 @@ class MultiplayerManager {
                     this.socket.emit('joinParty', { code: code.toUpperCase(), username, customAvatar });
                 } else {
                     console.error('[MULTIPLAYER] Failed to reconnect to server');
-                    alert('Failed to connect to server. Please refresh and try again.');
+                    if (window.game) window.game.showNotification('Failed to connect to server. Please refresh.', 'error');
                 }
             }, 500);
             return true;
