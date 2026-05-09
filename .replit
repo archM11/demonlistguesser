@@ -10,6 +10,3 @@ run = ["sh", "-c", "npm start"]
 [[ports]]
 localPort = 3002
 externalPort = 80
-
-[agent]
-expertMode = true
