@@ -219,27 +219,34 @@ function generatePartyCode() {
 // For other game types, preserve manual host assignments
 function autoAssignDuelSpectators(party) {
     if (party.gameType !== 'duels') {
-        // FFA/Teams: don't touch spectator flags — host manages them manually
         return;
     }
 
     if (party.members.length <= 2) {
-        // 2 or fewer in duels — everyone plays
         party.members.forEach(m => { m.spectator = false; });
         return;
     }
 
-    // Host always plays. Pick one random non-host opponent. Rest spectate.
-    // But preserve any manual host assignments — only auto-assign if no one is set yet
-    const nonHost = party.members.filter(m => m.id !== party.host);
-    const currentActive = nonHost.filter(m => !m.spectator);
+    // Check total active players — need exactly 2
+    const allActive = party.members.filter(m => !m.spectator);
+    if (allActive.length === 2) return; // Already correct
 
-    // If exactly 1 non-host is active, assignment is already correct
-    if (currentActive.length === 1) return;
+    // If not exactly 2 active, pick 2 randomly (preferring current active players)
+    // Reset all to spectator, then activate 2
+    party.members.forEach(m => { m.spectator = true; });
 
-    // Otherwise, pick a random opponent
-    const opponentIndex = Math.floor(Math.random() * nonHost.length);
-    nonHost.forEach((m, i) => { m.spectator = (i !== opponentIndex); });
+    // Prefer currently active players, fill remaining randomly
+    const toActivate = [];
+    for (const m of allActive) {
+        if (toActivate.length < 2) toActivate.push(m);
+    }
+    // Fill remaining slots randomly from spectators
+    const remaining = party.members.filter(m => !toActivate.includes(m));
+    while (toActivate.length < 2 && remaining.length > 0) {
+        const idx = Math.floor(Math.random() * remaining.length);
+        toActivate.push(remaining.splice(idx, 1)[0]);
+    }
+    toActivate.forEach(m => { m.spectator = false; });
 }
 
 // Ensure unique party code
@@ -504,17 +511,14 @@ io.on('connection', (socket) => {
         const member = party.members.find(m => m.id === data.playerId);
         if (!member) return;
 
-        // Host can't spectate in duels (need exactly 2 active players)
-        if (party.gameType === 'duels' && member.id === party.host && !member.spectator) return;
-
-        // For duels: only allow 1 non-host active player at a time
+        // For duels: only allow exactly 2 active players at a time
         if (party.gameType === 'duels' && member.spectator) {
-            // Activating this player — spectate all other non-host players first
-            party.members.forEach(m => {
-                if (m.id !== party.host && m.id !== member.id) {
-                    m.spectator = true;
-                }
-            });
+            // Activating this player — spectate all other players except this one and one other active
+            const activePlayers = party.members.filter(m => !m.spectator && m.id !== member.id);
+            // Keep only 1 other active player, spectate the rest
+            if (activePlayers.length >= 2) {
+                activePlayers.slice(1).forEach(m => { m.spectator = true; });
+            }
         }
 
         member.spectator = !member.spectator;
@@ -667,6 +671,11 @@ io.on('connection', (socket) => {
             return;
         }
 
+        if (party.gameState?.inProgress) {
+            socket.emit('error', { message: 'A game is already in progress' });
+            return;
+        }
+
         // CRITICAL FIX: Ensure gameState exists before setting properties
         if (!party.gameState) {
             party.gameState = {};
@@ -695,6 +704,21 @@ io.on('connection', (socket) => {
 
         // Finalize spectator assignments (preserves host's manual changes, auto-assigns if needed)
         autoAssignDuelSpectators(party);
+
+        // Teams: players not on any team become spectators
+        if (party.gameType === 'teams' && party.teams) {
+            const teamPlayers = new Set([
+                ...(party.teams.team1?.members || []),
+                ...(party.teams.team2?.members || [])
+            ]);
+            party.members.forEach(m => {
+                if (!m.spectator && !teamPlayers.has(m.id)) {
+                    m.spectator = true;
+                    console.log(`[SPECTATOR] ${m.name} has no team — auto-spectating`);
+                }
+            });
+        }
+
         console.log(`[SPECTATOR] Game start: active=${party.members.filter(m => !m.spectator).map(m => m.name).join(', ')}, spectating=${party.members.filter(m => m.spectator).map(m => m.name).join(', ') || 'none'}`);
 
 
@@ -706,7 +730,7 @@ io.on('connection', (socket) => {
         });
         
         // Clear any leftover duel-specific state first, BUT PRESERVE HEALTH
-        const preservedHealth = party.duelHealth ? { ...party.duelHealth } : null; // Create a COPY to avoid circular reference
+        // Clear old health — will be reinitialized below
         if (party.duelState) {
             delete party.duelState;
         }
@@ -751,16 +775,11 @@ io.on('connection', (socket) => {
                 roundMultiplier: 1.0
             };
 
-            // Initialize duel health ONLY if it doesn't exist or this is the very first game
+            // Always initialize fresh health for a new game
             const activePlayers = party.members.filter(m => !m.spectator);
-            if (!preservedHealth || Object.keys(preservedHealth).length === 0) {
-                console.log(`Initializing fresh duel health with ${duelHp} HP for ${activePlayers.length} players`);
-                party.duelHealth = {};
-                activePlayers.forEach(m => { party.duelHealth[m.id] = duelHp; });
-            } else {
-                console.log('Preserving existing duel health:', preservedHealth);
-                party.duelHealth = { ...preservedHealth }; // Create a new object from preserved values
-            }
+            console.log(`Initializing fresh duel health with ${duelHp} HP for ${activePlayers.length} players`);
+            party.duelHealth = {};
+            activePlayers.forEach(m => { party.duelHealth[m.id] = duelHp; });
         }
 
         console.log(`Game started in party: ${partyCode} with ${party.members.length} players`);
@@ -1131,25 +1150,15 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Allow any player to individually view final results if game is complete
-        if (party.gameState?.isComplete) {
-            // Send only to the requesting player — never broadcast to others
-            socket.emit('duelViewSummary', {
-                finalHealth: party.duelHealth ? { ...party.duelHealth } : null
-            });
-            return;
-        }
-        
-        // Legacy behavior for forcing all players (kept for compatibility)
-        if (party.host !== socket.id) {
-            console.log('Only host can force all players to results before game completion');
-            return;
-        }
-        
-        
-        // Send forceToResults to all party members
+        // Always send only to the requesting player — never broadcast
+        socket.emit('duelViewSummary', {
+            finalHealth: party.duelHealth ? { ...party.duelHealth } : null
+        });
+        return;
+
+        // Legacy code below is no longer used
         party.members.forEach((member, index) => {
-            
+
             const memberSocket = io.sockets.sockets.get(member.id);
             const socketStatus = {
                 exists: !!memberSocket,

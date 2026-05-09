@@ -156,7 +156,7 @@
                     <div class="form-section">
                         <h3>Enter Party Code</h3>
                         <div class="code-input-group">
-                            <input type="text" id="joinPartyCode" placeholder="Enter 6-digit code" class="party-code-input" maxlength="6">
+                            <input type="text" id="joinPartyCode" placeholder="Enter 6-digit code" class="party-code-input" maxlength="6" onkeydown="if(event.key==='Enter') window.game.joinParty()">
                             <button onclick="window.game.joinParty()" class="join-btn">Join Party</button>
                         </div>
                         <div class="join-help">

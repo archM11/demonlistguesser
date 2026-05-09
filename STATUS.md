@@ -266,21 +266,59 @@ DemonList Guessr is a web-based multiplayer Geometry Dash game where players wat
 
 ---
 
+## What We Fixed (Session 5 -- 2026-05-09)
+
+### Bug Fix: Preserved Health Between Games
+**Problem:** Starting a new duel game preserved health from the previous game — a player who lost (0 HP) would start the next game at 0 HP and instantly lose.
+**Fix:** Always initialize fresh health for every new game, removed preservation logic.
+
+### Bug Fix: Double Submission Overwriting Guesses (All Modes)
+**Problem:** Timer fired `submitGuess(true)` after player already submitted, overwriting real guess with 10000. Only guarded for FFA, not duels/teams/solo.
+**Fix:** `hasSubmittedThisRound` guard now applies to ALL game types. Flag reset in `startNewRound()` for both solo and multiplayer.
+
+### Bug Fix: View Final Results Forcing All Players
+**Problem:** Host clicking "View Final Results" broadcast `duelViewSummary` to all players, forcing everyone to the results screen.
+**Fix:** `showFinalResults` server handler now always sends only to the requesting player. Removed legacy broadcast code. All players use individual `viewFinalResults()`.
+
+### Bug Fix: View Final Results Button Not Working
+**Problem:** The `addEventListener` handler removed the overlay before the `onclick` handler could fire, leaving the host on a blank game screen.
+**Fix:** Call `viewFinalResults()` directly in the event handler instead of returning.
+
+### Bug Fix: Teams Win/Loss Inconsistency
+**Problem:** Players on the same team saw different Victory/Defeat results. `myTeam` defaulted to 'team1' when null, and winner comparison used socket ID instead of team ID.
+**Fix:** Re-derive `myTeam` from party data at results time. Compare `winnerId` against team ID only.
+
+### Bug Fix: Auto-Assign Spectators with Host Spectating
+**Problem:** When host set themselves to spectate in duels, only 1 active player remained instead of 2.
+**Fix:** `autoAssignDuelSpectators` now checks total active count (not just non-host) and ensures exactly 2 active players.
+
+### Bug Fix: Thumbnail Mode Missing for All Game Types
+**Problem:** Thumbnail mode included demons without videos, causing blank screens in teams/duels/FFA.
+**Fix:** All modes now require demons to have a video URL.
+
+### Improvements
+- Enter key joins party from code input
+- Host can spectate in duels (with exactly 2 other active players)
+- Teamless players auto-spectate when teams game starts
+- Start button hidden during active game for spectating host
+- Server blocks starting new game while one is in progress
+- Removed browser `confirm()` dialogs for quit and kick actions
+- Leave button added to detailed duel/team results overlay
+- Video stops in team detailed results (was only stopping for duels)
+- Individual "View Final Results" for all players (host no longer forces others)
+
+---
+
 ## What We Want to Achieve
 
 ### Immediate Goals
 - Stable, bug-free experience across all game modes
-- Spectator system fully tested in all modes
 - Clean transitions between all screens for all player types
 
 ### Known Remaining Issues
 - Duplicate method definitions in `game.js` (two `handlePartyEnded`, two `showJoinParty`, etc.) -- second overrides first
 - Debug logging throughout codebase needs cleanup
 - Untracked utility scripts in repo root (fetch_*.py, merge_*.py, etc.)
-
-### Up Next
-- **Bugtest Teams mode** -- full playthrough testing with spectators
-- **Bugtest Spectator system** -- edge cases with joins/leaves/swaps during games
 
 ### Future Goals
 - Clean up debug logging throughout codebase

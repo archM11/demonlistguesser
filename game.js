@@ -550,9 +550,8 @@ class DemonListGuessr {
                 return false;
             }
 
-            // CRITICAL: For video modes, only include demons with videos
-            // For thumbnail mode, we can include demons without videos
-            if (gameMode !== 'thumbnail' && !demon.video) {
+            // Only include demons with videos (needed for all modes including thumbnail)
+            if (!demon.video) {
                 return false;
             }
 
@@ -906,6 +905,8 @@ class DemonListGuessr {
                 this.currentGame.duelState.roundMultiplier = data.multiplier;
             }
             this.updateSpectatorView();
+            const controls = document.getElementById('spectatorHostControls');
+            if (controls) controls.style.display = 'none';
             return;
         }
 
@@ -1782,26 +1783,32 @@ class DemonListGuessr {
         console.log('🏆 [CLIENT] Duel ended - Winner:', data.winner);
         console.log('🏆 [CLIENT] Final health:', this.currentGame.duelHealth);
 
-        // Update the button text if it exists
+        // Replace any existing round control button with "View Final Results"
+        const controlDiv = document.getElementById('duelRoundControlBtn');
+        if (controlDiv) {
+            controlDiv.innerHTML = `<button id="duelNextRoundBtn" onclick="window.game.viewFinalResults()" style="
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                border: none; padding: 12px 30px; font-size: 18px; font-weight: bold;
+                color: white; border-radius: 25px; cursor: pointer;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            ">View Final Results</button>`;
+        }
+
         const nextBtn = document.getElementById('nextRoundBtn');
-        const duelNextBtn = document.getElementById('duelNextRoundBtn');
-
         if (nextBtn) nextBtn.textContent = 'View Summary';
-        if (duelNextBtn) duelNextBtn.textContent = 'View Summary';
-
-        // Non-host stays on "Waiting for host..." screen.
-        // They will transition when the host clicks "View Summary",
-        // which triggers the showFinalResults event.
     }
 
     handleShowFinalResults(data) {
         // Spectators stay on lobby — don't go to results
-        const onLobby = document.getElementById('partySetupScreen')?.classList.contains('active');
-        if (this.isSpectator || this.wasSpectator || onLobby) {
+        if (this.isSpectator || this.wasSpectator) {
             this.isSpectator = false;
             this.removeSpectatorPanel();
             return;
         }
+
+        // Remove any game overlays
+        const overlays = document.querySelectorAll('#detailedDuelResults, #duelWaitingOverlay, #clashScreen, #ffaRevealScreen');
+        overlays.forEach(o => o.remove());
 
         // Update health if provided
         if (data.finalHealth) {
@@ -3091,9 +3098,10 @@ class DemonListGuessr {
             hints: gameData.hints,
             lists: gameData.lists,
             rounds: [],
-            currentRound: 1, // Start at round 1 to match server initialization
+            currentRound: 1,
             totalRounds: gameData.totalRounds,
             score: 0,
+            hasSubmittedThisRound: false,
             startTime: Date.now(),
             isParty: true,
             partyCode: party.code,
@@ -3533,6 +3541,7 @@ class DemonListGuessr {
             currentRound: 0,
             totalRounds: (this.currentParty && (this.currentParty.gameType === 'duels' || this.currentParty.gameType === 'teams')) ? 999 : (gameMode === 'classic' ? 5 : 10),
             score: 0,
+            hasSubmittedThisRound: false,
             startTime: Date.now(),
             seed: randomSeed
         };
@@ -3547,7 +3556,10 @@ class DemonListGuessr {
 
     startNewRound() {
         console.log('Starting new round - clearing server health flag and duel winner');
-        
+
+        // Reset submission flag for new round
+        if (this.currentGame) this.currentGame.hasSubmittedThisRound = false;
+
         // If there's a duel winner, don't start new round - the duel is over
         if (this.currentGame.duelWinner) {
             console.log('[DEBUG] Duel is over, not starting new round. Winner:', this.currentGame.duelWinner);
@@ -3970,9 +3982,9 @@ class DemonListGuessr {
             return;
         }
 
-        // Prevent double submission in FFA (timer may fire after player already submitted)
-        if (this.currentGame?.gameType === 'ffa' && this.currentGame?.hasSubmittedThisRound) {
-            console.log('[SUBMIT] Ignoring duplicate FFA submission');
+        // Prevent double submission (timer may fire after player already submitted)
+        if (this.currentGame?.hasSubmittedThisRound) {
+            console.log('[SUBMIT] Ignoring duplicate submission');
             if (this.currentTimer) { clearInterval(this.currentTimer); this.currentTimer = null; }
             return;
         }
@@ -3999,7 +4011,8 @@ class DemonListGuessr {
         console.log('SCORE CALCULATED:', points, 'for guess:', guess, 'vs actual:', actual);
         
         this.currentGame.score += points;
-        
+        this.currentGame.hasSubmittedThisRound = true;
+
         // Note: Current player's total score will be updated via handleOpponentScore when server sends totalScores
         
         this.currentGame.rounds.push({
@@ -4012,7 +4025,6 @@ class DemonListGuessr {
         // Handle different game modes
         if (this.currentGame.gameType === 'ffa') {
             // FFA mode - submit score and wait for others
-            this.currentGame.hasSubmittedThisRound = true;
             const currentUserId = this.getCurrentUserId();
             
             // Update local FFA score
@@ -4133,6 +4145,8 @@ class DemonListGuessr {
             console.log('[QUIT] Ignoring showFFAReveal because user has quit');
             return;
         }
+
+        this.stopCurrentVideo();
 
         // Remove waiting overlay
         const waitingOverlay = document.getElementById('ffaWaitingOverlay');
@@ -4532,17 +4546,53 @@ class DemonListGuessr {
                 <p style="color: var(--text-dim);">Game starting...</p>
             </div>
             <p id="spectatorLiveRound" style="color: var(--text-dim); font-size: 0.85rem; margin-top: 0.75rem;"></p>
+            <div id="spectatorHostControls" style="margin-top: 0.75rem; display: none;"></div>
         `;
 
         const container = document.querySelector('#partySetupScreen .container');
         if (container) container.appendChild(panel);
 
+        // Hide start button during active game
+        const startBtn = document.getElementById('startPartyBtn');
+        if (startBtn) startBtn.style.display = 'none';
+
         this.updateSpectatorView();
+    }
+
+    updateSpectatorHostControls() {
+        const controls = document.getElementById('spectatorHostControls');
+        if (!controls || !this.isHost) return;
+
+        const gameType = this.currentGame?.gameType;
+        const hasWinner = gameType === 'duels' || gameType === 'teams'
+            ? this.currentGame?.duelWinner
+            : (this.currentGame?.currentRound >= this.currentGame?.totalRounds);
+
+        if (hasWinner) {
+            controls.style.display = 'block';
+            controls.innerHTML = `<button onclick="window.game.viewFinalResults()" style="padding: 10px 24px; font-size: 14px; font-weight: 700; background: #2D5A87; color: white; border: none; border-radius: 8px; cursor: pointer; width: 100%;">View Final Results</button>`;
+        } else {
+            controls.style.display = 'block';
+            controls.innerHTML = `<button onclick="window.game.spectatorNextRound()" style="padding: 10px 24px; font-size: 14px; font-weight: 700; background: #2D5A87; color: white; border: none; border-radius: 8px; cursor: pointer; width: 100%;">Next Round</button>`;
+        }
+    }
+
+    spectatorNextRound() {
+        if (!this.isHost || !window.multiplayerManager) return;
+        window.multiplayerManager.nextRound(this.currentGame?.currentRound);
+        const controls = document.getElementById('spectatorHostControls');
+        if (controls) {
+            controls.style.display = 'none';
+        }
     }
 
     removeSpectatorPanel() {
         const panel = document.getElementById('spectatorLivePanel');
         if (panel) panel.remove();
+
+        // Restore start button
+        const startBtn = document.getElementById('startPartyBtn');
+        if (startBtn && this.isHost) startBtn.style.display = '';
     }
 
     updateSpectatorView() {
@@ -5092,6 +5142,7 @@ class DemonListGuessr {
         const existing = document.getElementById('detailedDuelResults');
         if (existing) existing.remove();
 
+        this.stopCurrentVideo();
         this.updateHealthAtGameSummary();
 
         const dr = this.currentGame.clashData;
@@ -5153,17 +5204,17 @@ class DemonListGuessr {
 
         // Buttons
         let buttonsHtml;
-        const hasWinner = myHealth <= 0 || enemyHealth <= 0;
-        if (this.isHost) {
-            const btnText = hasWinner ? 'View Summary' : 'Next Round';
-            buttonsHtml = `<button id="duelNextRoundBtn" onclick="window.game.nextRound()" style="padding:12px 32px;font-size:16px;font-weight:700;background:#2D5A87;color:white;border:none;border-radius:8px;cursor:pointer;margin-top:16px;">${btnText}</button>`;
-        } else if (hasWinner) {
-            buttonsHtml = `<button onclick="window.game.viewFinalResults()" style="padding:12px 32px;font-size:16px;font-weight:700;background:#2D5A87;color:white;border:none;border-radius:8px;cursor:pointer;margin-top:16px;">View Final Results</button>`;
+        const hasWinner = this.currentGame.duelWinner || myHealth <= 0 || enemyHealth <= 0;
+        if (hasWinner) {
+            buttonsHtml = `<button id="duelNextRoundBtn" onclick="window.game.viewFinalResults()" style="padding:12px 32px;font-size:16px;font-weight:700;background:#2D5A87;color:white;border:none;border-radius:8px;cursor:pointer;margin-top:16px;">View Final Results</button>`;
+        } else if (this.isHost) {
+            buttonsHtml = `<button id="duelNextRoundBtn" onclick="window.game.nextRound()" style="padding:12px 32px;font-size:16px;font-weight:700;background:#2D5A87;color:white;border:none;border-radius:8px;cursor:pointer;margin-top:16px;">Next Round</button>`;
         } else {
             buttonsHtml = `<div style="color:#888;font-style:italic;margin-top:16px;">Waiting for host...</div>`;
         }
 
         overlay.innerHTML = `
+            <button onclick="window.game.quitGame()" style="position: fixed; top: 15px; right: 15px; padding: 8px 16px; background: rgba(239, 68, 68, 0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 1002;">Leave</button>
             <div style="max-width:500px;width:100%;">
                 <h2 style="text-align:center;margin-bottom:8px;">Round ${this.currentGame.currentRound}</h2>
                 <div style="text-align:center;color:#aaa;margin-bottom:16px;">${demonName} — #${actualPlacement}</div>
@@ -5574,6 +5625,7 @@ class DemonListGuessr {
         this.stopCurrentVideo();
         
         resultsOverlay.innerHTML = `
+            <button onclick="window.game.quitGame()" style="position: fixed; top: 15px; right: 15px; padding: 8px 16px; background: rgba(239, 68, 68, 0.8); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 1003;">Leave</button>
             <!-- Health Bars at Top Corners (You vs Opponent perspective) -->
             <div style="position: absolute; top: 20px; left: 20px; display: flex; align-items: center; gap: 10px;">
                 <div style="display: flex; flex-direction: column; align-items: flex-start;">
@@ -5666,30 +5718,33 @@ class DemonListGuessr {
                         </div>
                     </div>
                     
-                    <!-- Next Round Button (Host Only) -->
-                    ${this.isHost ? `
-                        <div style="margin-top: 20px; text-align: center;">
-                            <button id="duelNextRoundBtn" style="
+                    <!-- Round Control Button -->
+                    <div id="duelRoundControlBtn" style="margin-top: 20px; text-align: center;">
+                    ${(() => {
+                        const health = this.currentGame.duelHealth || {};
+                        const healthVals = Object.values(health);
+                        const someoneIsDead = this.currentGame.duelWinner || healthVals.some(h => h <= 0);
+                        if (someoneIsDead) {
+                            return `<button id="duelNextRoundBtn" onclick="window.game.viewFinalResults()" style="
                                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                                border: none;
-                                padding: 12px 30px;
-                                font-size: 18px;
-                                font-weight: bold;
-                                color: white;
-                                border-radius: 25px;
-                                cursor: pointer;
+                                border: none; padding: 12px 30px; font-size: 18px; font-weight: bold;
+                                color: white; border-radius: 25px; cursor: pointer;
                                 box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-                                transition: transform 0.2s;
-                            " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                                ${this.currentGame.duelWinner ? 'View Summary' : 'Next Round'}
-                            <!-- DEBUG: Winner=${this.currentGame.duelWinner}, Host=${this.isHost} -->
-                            </button>
-                        </div>
-                    ` : `
-                        <div style="margin-top: 20px; text-align: center; padding: 15px; background: rgba(255,193,7,0.2); border-radius: 15px;">
-                            <p style="color: #ffc107; margin: 0;">Waiting for host to advance to next round...</p>
-                        </div>
-                    `}
+                            ">View Final Results</button>`;
+                        } else if (this.isHost) {
+                            return `<button id="duelNextRoundBtn" style="
+                                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                                border: none; padding: 12px 30px; font-size: 18px; font-weight: bold;
+                                color: white; border-radius: 25px; cursor: pointer;
+                                box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+                            ">Next Round</button>`;
+                        } else {
+                            return `<div style="padding: 15px; background: rgba(255,193,7,0.2); border-radius: 15px;">
+                                <p style="color: #ffc107; margin: 0;">Waiting for host to advance to next round...</p>
+                            </div>`;
+                        }
+                    })()}
+                    </div>
                 </div>
             </div>
         `;
@@ -5766,13 +5821,8 @@ class DemonListGuessr {
 
                         // Check for duel end condition
                         if (this.currentGame.duelWinner) {
-                            console.log('🏆 DUEL WINNER DETECTED - NOTIFYING ALL PLAYERS');
-                            // Tell all other players to show final results
-                            if (window.multiplayerManager) {
-                                window.multiplayerManager.duelViewSummary();
-                            }
-                            // Also show results locally for host
-                            this.showDuelFinalResults();
+                            this.viewFinalResults();
+                            return;
                         } else {
                             console.log('NO DUEL WINNER - ADVANCING TO NEXT ROUND');
                             // Advance to next round and notify other players
@@ -5906,6 +5956,7 @@ class DemonListGuessr {
             }
             if (this.currentGame) this.currentGame.ffaRoundData = {};
             this.updateSpectatorView();
+            this.updateSpectatorHostControls();
             return;
         }
 
@@ -7394,16 +7445,18 @@ class DemonListGuessr {
             const currentUserId = this.getCurrentUserId();
             const ffaScores = this.currentGame.ffaScores || {};
             
-            const playerScores = this.currentParty.members.map(member => {
-                const isCurrentUser = member.id === currentUserId;
-                const score = ffaScores[member.id] || 0;
-                return {
-                    name: member.name,
-                    score: score,
-                    isYou: isCurrentUser,
-                    id: member.id
-                };
-            });
+            const playerScores = this.currentParty.members
+                .filter(member => !member.spectator && ffaScores[member.id] !== undefined)
+                .map(member => {
+                    const isCurrentUser = member.id === currentUserId;
+                    const score = ffaScores[member.id] || 0;
+                    return {
+                        name: member.name,
+                        score: score,
+                        isYou: isCurrentUser,
+                        id: member.id
+                    };
+                });
             
             // Sort by score descending
             playerScores.sort((a, b) => b.score - a.score);
@@ -7433,7 +7486,14 @@ class DemonListGuessr {
             `;
         } else if (gameType === 'teams') {
             // Team Duels: Show victory/defeat with health bars
-            const myTeam = this.currentGame.myTeam || 'team1';
+            // Re-derive myTeam from current party data in case it wasn't set at game start
+            let myTeam = this.currentGame.myTeam;
+            if (!myTeam) {
+                const sid = this.getCurrentUserId();
+                if (this.currentParty?.teams?.team1?.members?.includes(sid)) myTeam = 'team1';
+                else if (this.currentParty?.teams?.team2?.members?.includes(sid)) myTeam = 'team2';
+                else myTeam = 'team1';
+            }
             const enemyTeam = myTeam === 'team1' ? 'team2' : 'team1';
             const maxHp = this.currentGame.duelHpMax || 100;
             const myHealth = this.currentGame.duelHealth?.[myTeam] ?? 0;
@@ -7441,9 +7501,11 @@ class DemonListGuessr {
 
             let winMessage = '';
             let youWon = false, theyWon = false;
-            if (myHealth > 0 && enemyHealth <= 0) { winMessage = 'Victory'; youWon = true; }
+            const winnerId = this.currentGame.duelWinner;
+            if (winnerId === myTeam) { winMessage = 'Victory'; youWon = true; }
+            else if (winnerId) { winMessage = 'Defeat'; theyWon = true; }
+            else if (myHealth > 0 && enemyHealth <= 0) { winMessage = 'Victory'; youWon = true; }
             else if (myHealth <= 0 && enemyHealth > 0) { winMessage = 'Defeat'; theyWon = true; }
-            else if (myHealth <= 0 && enemyHealth <= 0) { winMessage = 'Draw'; }
             else { winMessage = 'Battle continues...'; }
 
             const myPct = (myHealth / maxHp) * 100;
@@ -7489,18 +7551,18 @@ class DemonListGuessr {
         } else if (gameType === 'duels') {
             // Duels: Show combat results with health system
             const currentUserId = this.getCurrentUserId();
-            const memberIds = this.currentParty?.members?.map(m => m.id) || [];
+            // Use duelHealth keys to find the two active players (not spectators)
+            const healthIds = Object.keys(this.currentGame.duelHealth || {});
+            const memberIds = healthIds.length >= 2 ? healthIds : this.currentParty?.members?.filter(m => !m.spectator).map(m => m.id) || [];
             const player1Id = memberIds[0];
             const player2Id = memberIds[1];
             const isPlayer1 = currentUserId === player1Id;
-            
-            const opponent = this.currentParty?.members?.find(m => m && m.id !== currentUserId);
-            const opponentName = opponent ? (opponent.name || 'Opponent').replace(' (Host)', '') : 'Opponent';
-            
-            // Fix win detection based on actual health values
-            
-            const myHealthRaw = this.currentGame.duelHealth?.[currentUserId];
+
             const opponentId = isPlayer1 ? player2Id : player1Id;
+            const opponent = this.currentParty?.members?.find(m => m.id === opponentId);
+            const opponentName = opponent ? (opponent.name || 'Opponent').replace(' (Host)', '') : 'Opponent';
+
+            const myHealthRaw = this.currentGame.duelHealth?.[currentUserId];
             const opponentHealthRaw = this.currentGame.duelHealth?.[opponentId];
             
             const myHealth = myHealthRaw ?? 0;
@@ -7510,7 +7572,14 @@ class DemonListGuessr {
             let youWon = false;
             let opponentWon = false;
             
-            if (myHealth > 0 && opponentHealth === 0) {
+            const winnerId = this.currentGame.duelWinner;
+            if (winnerId === currentUserId) {
+                winMessage = 'Victory';
+                youWon = true;
+            } else if (winnerId) {
+                winMessage = 'Defeat';
+                opponentWon = true;
+            } else if (myHealth > 0 && opponentHealth === 0) {
                 winMessage = 'Victory';
                 this.currentGame.duelWinner = currentUserId;
                 youWon = true;
@@ -7518,10 +7587,7 @@ class DemonListGuessr {
                 winMessage = 'Defeat';
                 this.currentGame.duelWinner = isPlayer1 ? player2Id : player1Id;
                 opponentWon = true;
-            } else if (myHealth === 0 && opponentHealth === 0) {
-                winMessage = 'Draw';
             } else {
-                // Both still have health - shouldn't happen at game end
                 winMessage = 'Battle continues...';
             }
             
@@ -7616,7 +7682,6 @@ class DemonListGuessr {
     }
 
     quitGame() {
-        if (confirm('Are you sure you want to quit the current game?')) {
             // Set flag to prevent any automatic screen transitions after quitting
             console.log('[QUIT] User has quit - preventing automatic screen transitions');
             this.userHasQuit = true;
@@ -7629,7 +7694,6 @@ class DemonListGuessr {
             }
             
             this.goHome();
-        }
     }
     
     // Comprehensive cleanup function to remove all game overlays and notifications
@@ -7741,12 +7805,6 @@ class DemonListGuessr {
         const playerToKick = this.currentParty.members.find(m => m.id === playerId);
         if (!playerToKick) {
             console.error('❌ [CLIENT] Player not found in party');
-            return;
-        }
-
-        // Confirm kick action
-        const confirmKick = confirm(`Are you sure you want to kick ${playerToKick.name} from the party?`);
-        if (!confirmKick) {
             return;
         }
 
