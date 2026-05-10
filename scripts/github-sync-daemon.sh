@@ -11,17 +11,19 @@ while true; do
     ORIGIN_URL=$(git remote get-url origin 2>/dev/null || echo "")
 
     if [ -n "$ORIGIN_URL" ]; then
-      # Count commits that exist locally but not on the remote ref
-      LOCAL_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
-      REMOTE_SHA=$(git ls-remote "$ORIGIN_URL" refs/heads/main 2>/dev/null | awk '{print $1}' || echo "")
-
-      if [ -n "$LOCAL_SHA" ] && [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
-        echo "[$(date -u +%H:%M:%S)] Local and remote differ — pushing..."
-        bash scripts/sync-to-github.sh && echo "[$(date -u +%H:%M:%S)] Push complete." \
-          || echo "[$(date -u +%H:%M:%S)] Push skipped or failed (non-fast-forward). Will retry."
-      else
-        echo "[$(date -u +%H:%M:%S)] Already in sync."
-      fi
+      # Attempt the push directly and rely on the exit code to determine if
+      # there was anything to push. This avoids a separate unauthenticated
+      # ls-remote call that can fail or return empty for private repos.
+      OUTPUT=$(git \
+        -c "credential.helper=!f() { echo username=x-access-token; echo \"password=${GITHUB_TOKEN}\"; }; f" \
+        push "$ORIGIN_URL" "HEAD:$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)" \
+        2>&1) && {
+        if echo "$OUTPUT" | grep -q "Everything up-to-date"; then
+          echo "[$(date -u +%H:%M:%S)] Already in sync."
+        else
+          echo "[$(date -u +%H:%M:%S)] Push complete: $(git rev-parse --short HEAD)"
+        fi
+      } || echo "[$(date -u +%H:%M:%S)] Push skipped or failed (non-fast-forward). Will retry."
     fi
   else
     echo "[$(date -u +%H:%M:%S)] GITHUB_TOKEN not set — sleeping."

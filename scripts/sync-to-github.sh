@@ -13,9 +13,12 @@ fi
 # Derive the repo URL from the existing remote so nothing is hardcoded here.
 ORIGIN_URL=$(git remote get-url origin)
 
+# Derive the current branch dynamically (no hardcoded branch names).
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD)
+
 # Push using an ephemeral credential helper scoped only to this command.
 # The token is never written to .git/config or the remote URL.
 git -c "credential.helper=!f() { echo username=x-access-token; echo \"password=${GITHUB_TOKEN}\"; }; f" \
-  push "$ORIGIN_URL" HEAD:main
+  push "$ORIGIN_URL" "HEAD:${CURRENT_BRANCH}"
 
-echo "Synced to GitHub: $(git rev-parse --short HEAD)"
+echo "Synced to GitHub: $(git rev-parse --short HEAD) -> ${CURRENT_BRANCH}"
