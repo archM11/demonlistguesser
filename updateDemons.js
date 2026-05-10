@@ -112,8 +112,31 @@ async function updateDemons() {
     const pcDemons = await fetchPointercrate();
     console.log(`[updateDemons] Got ${pcDemons.length} demons from Pointercrate`);
 
+    // If Pointercrate failed, fall back to video URLs from the existing saved file
+    let effectivePcDemons = pcDemons;
+    if (pcDemons.length === 0) {
+      console.log('[updateDemons] Pointercrate unavailable — preserving video URLs from existing data...');
+      try {
+        const existing = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+        const existingByName = {};
+        for (const d of existing) {
+          if (d.video) existingByName[d.name.toLowerCase()] = d;
+        }
+        effectivePcDemons = Object.values(existingByName).map(d => ({
+          name: d.name,
+          video: d.video,
+          requirement: d.requirement || 100,
+          publisher: d.publisher || { id: null, name: 'Unknown', banned: false },
+          verifier: d.verifier || { id: null, name: 'Unknown', banned: false }
+        }));
+        console.log(`[updateDemons] Restored ${effectivePcDemons.length} demons with existing video URLs`);
+      } catch (e) {
+        console.log('[updateDemons] No existing data to restore from:', e.message);
+      }
+    }
+
     // Merge
-    const merged = mergeData(activeDemons, pcDemons);
+    const merged = mergeData(activeDemons, effectivePcDemons);
     merged.sort((a, b) => a.position - b.position);
 
     // Write to file

@@ -7841,12 +7841,25 @@ class DemonListGuessr {
         const randomizer = this.seededRandom(seed);
         
         const dailyDemons = [];
-        const mainAndExtended = this.demons.filter(d => d.position <= 150);
-        const legacy = this.demons.filter(d => d.position > 150);
+        const mainAndExtended = this.demons.filter(d => d.position <= 150 && d.video);
+        const legacy = this.demons.filter(d => d.position > 150 && d.video);
         
         console.log(`Available demons: Main/Extended: ${mainAndExtended.length}, Legacy: ${legacy.length}`);
+
+        if (mainAndExtended.length === 0) {
+            console.error('No valid main/extended demons with videos available');
+            this.showNotification('No playable demons available. Please try again later.', 'error');
+            return;
+        }
         
+        let attempts = 0;
+        const maxAttempts = 500;
         for (let i = 0; i < 5; i++) {
+            attempts++;
+            if (attempts > maxAttempts) {
+                console.error('Could not select enough demons with videos after', maxAttempts, 'attempts');
+                break;
+            }
             const useLegacy = randomizer() < 0.15 && legacy.length > 0;
             const pool = useLegacy ? legacy : mainAndExtended;
             
